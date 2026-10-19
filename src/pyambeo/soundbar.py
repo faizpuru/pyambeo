@@ -11,9 +11,8 @@ from .const import (
     BRIGHTNESS_RANGE_DEFAULT,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
-    OPTIONAL_FEATURES,
     Capability,
-    PathSub,
+    Setting,
     StateKey,
 )
 from .exceptions import (
@@ -36,17 +35,22 @@ _VERSION_PATH = "ui:settings/firmwareUpdate/currentVersion"
 _MODEL_CLASSES: dict[str, type["AmbeoSoundbar"]] = {}
 
 
-def _extract_from_subs(
-    subs: tuple[PathSub, ...], path: str, item_value: dict
-) -> dict[StateKey, Any]:
-    """Return state updates for the first PathSub whose path matches."""
-    for sub in subs:
-        if sub.path == path:
-            value = item_value.get(sub.type_key)
-            if sub.sub_key and isinstance(value, dict):
-                value = value.get(sub.sub_key)
-            return {sub.data_key: value} if value is not None else {}
-    return {}
+# Always present in fetch_state() (None when the device does not answer them).
+_CORE_KEYS = (
+    StateKey.VOLUME,
+    StateKey.MUTED,
+    StateKey.STATE,
+    StateKey.CURRENT_SOURCE,
+    StateKey.CURRENT_PRESET,
+    StateKey.PLAYER_DATA,
+)
+
+
+def _unwrap(setting: Setting, value: Any) -> Any:
+    """Return the setting value, extracting its sub_key if any."""
+    if setting.sub_key is None:
+        return value
+    return value.get(setting.sub_key) if isinstance(value, dict) else None
 
 
 async def _none_on_response_error[T](coro: Awaitable[T]) -> T | None:
@@ -69,14 +73,16 @@ class AmbeoSoundbar:
     models: ClassVar[tuple[str, ...]] = ()
     capabilities: ClassVar[frozenset[Capability]] = frozenset()
 
-    # Common paths shared by all device models.
-    _BASE_SUBSCRIPTIONS: ClassVar[tuple[PathSub, ...]] = (
-        PathSub("player:player/data/value", StateKey.PLAYER_DATA, "playLogicData"),
-        PathSub("player:player/data/playTime", StateKey.PLAY_TIME, "i64_"),
-        PathSub("powermanager:target", StateKey.STATE, "powerTarget", sub_key="target"),
+    # Settings shared by all device models.
+    _BASE_SETTINGS: ClassVar[tuple[Setting, ...]] = (
+        Setting("player:volume", StateKey.VOLUME, "i32_"),
+        Setting("settings:/mediaPlayer/mute", StateKey.MUTED, "bool_"),
+        Setting("player:player/data/value", StateKey.PLAYER_DATA, "playLogicData"),
+        Setting("player:player/data/playTime", StateKey.PLAY_TIME, "i64_"),
+        Setting("powermanager:target", StateKey.STATE, "powerTarget", sub_key="target"),
     )
-    # Model specific paths, filtered by capability.
-    _SUBSCRIPTIONS: ClassVar[tuple[PathSub, ...]] = ()
+    # Model specific settings: read, written, polled and subscribed to by path.
+    _SETTINGS: ClassVar[tuple[Setting, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register the subclass for its device models."""
@@ -142,52 +148,78 @@ class AmbeoSoundbar:
         """Check if the device has a specific capability."""
         return capability in self.capabilities
 
+    # Settings.
+    def _available_settings(self) -> list[Setting]:
+        """Return the settings of this device, filtered by capability."""
+        return [
+            s
+            for s in (*self._BASE_SETTINGS, *self._SETTINGS)
+            if s.capability is None or self.has_capability(s.capability)
+        ]
+
+    def _setting(self, key: StateKey) -> Setting:
+        """Return the setting for a state key.
+
+        Raises NotImplementedError when the model does not have it.
+        """
+        for setting in (*self._BASE_SETTINGS, *self._SETTINGS):
+            if setting.data_key == key:
+                return setting
+        raise NotImplementedError(f"{key} is not supported by {type(self).__name__}")
+
+    async def _read(self, setting: Setting) -> Any:
+        """Read a setting value from the device."""
+        value = await self._transport.get_value(setting.path, setting.type_key)
+        return _unwrap(setting, value)
+
+    async def _get(self, key: StateKey) -> Any:
+        """Read the value of a state key from the device."""
+        return await self._read(self._setting(key))
+
+    async def _set(self, key: StateKey, value: Any) -> None:
+        """Write the value of a state key to the device."""
+        setting = self._setting(key)
+        await self._transport.set_value(setting.path, setting.type_key, value)
+
     # State.
     async def fetch_state(self, max_concurrency: int = 3) -> dict[StateKey, Any]:
         """Fetch the full device state.
 
         Core values are always present (None when the device does not answer
-        them). Optional values are only present when available.
+        them). Optional values are only present when available. At most
+        `max_concurrency` requests are in flight at once.
         Raises AmbeoConnectionError when the device cannot be reached.
         """
-        core_keys = (
-            StateKey.VOLUME,
-            StateKey.MUTED,
-            StateKey.STATE,
-            StateKey.CURRENT_SOURCE,
-            StateKey.CURRENT_PRESET,
-            StateKey.PLAYER_DATA,
-        )
-        core_values = await asyncio.gather(
-            _none_on_response_error(self.get_volume()),
-            _none_on_response_error(self.is_mute()),
-            _none_on_response_error(self.get_state()),
-            _none_on_response_error(self.get_current_source()),
-            _none_on_response_error(self.get_current_preset()),
-            _none_on_response_error(self.player_data()),
-        )
-        state: dict[StateKey, Any] = dict(zip(core_keys, core_values, strict=True))
-
         semaphore = asyncio.Semaphore(max_concurrency)
 
-        async def fetch_optional(api_method: str) -> Any:
+        async def limited[T](coro: Awaitable[T]) -> T:
+            async with semaphore:
+                return await coro
+
+        async def fetch(setting: Setting) -> Any:
+            if setting.data_key in _CORE_KEYS:
+                return await _none_on_response_error(limited(self._read(setting)))
             try:
-                async with semaphore:
-                    return await getattr(self, api_method)()
-            except (AmbeoError, NotImplementedError) as e:
-                _LOGGER.debug("%s not available: %s", api_method, e)
+                return await limited(self._read(setting))
+            except AmbeoError as e:
+                _LOGGER.debug("%s not available: %s", setting.data_key, e)
                 return None
 
-        features = [
-            f
-            for f in OPTIONAL_FEATURES
-            if f.capability is None or self.has_capability(f.capability)
-        ]
-        values = await asyncio.gather(*(fetch_optional(f.api_method) for f in features))
-        for feature, value in zip(features, values, strict=True):
+        settings = self._available_settings()
+        values, extra = await asyncio.gather(
+            asyncio.gather(*(fetch(s) for s in settings)),
+            limited(self._fetch_extra_state()),
+        )
+        state: dict[StateKey, Any] = dict.fromkeys(_CORE_KEYS)
+        for setting, value in zip(settings, values, strict=True):
             if value is not None:
-                state[feature.data_key] = value
+                state[setting.data_key] = value
+        state.update(extra)
         return state
+
+    async def _fetch_extra_state(self) -> dict[StateKey, Any]:
+        """Return model-specific state values, fetched with a single request."""
+        return {}
 
     def player_status(self, state: Mapping[str, Any]) -> PlayerStatus:
         """Return the effective playback status for a state snapshot."""
@@ -224,19 +256,15 @@ class AmbeoSoundbar:
     # Events.
     def subscribed_paths(self) -> list[str]:
         """Return the paths to subscribe to, filtered by device capabilities."""
-        paths = [s.path for s in self._BASE_SUBSCRIPTIONS]
-        paths.extend(
-            s.path
-            for s in self._SUBSCRIPTIONS
-            if s.capability is None or self.has_capability(s.capability)
-        )
-        return paths
+        return [s.path for s in self._available_settings()]
 
     def process_event(self, path: str, item_value: dict) -> dict[StateKey, Any]:
         """Map an event path + itemValue to state updates."""
-        return _extract_from_subs(
-            self._BASE_SUBSCRIPTIONS, path, item_value
-        ) or _extract_from_subs(self._SUBSCRIPTIONS, path, item_value)
+        for setting in (*self._BASE_SETTINGS, *self._SETTINGS):
+            if setting.path == path:
+                value = _unwrap(setting, item_value.get(setting.type_key))
+                return {setting.data_key: value} if value is not None else {}
+        return {}
 
     async def listen(
         self, *, poll_timeout_ms: int = 30000, retry_delay: float = 30
@@ -318,30 +346,25 @@ class AmbeoSoundbar:
     # Volume.
     async def get_volume(self) -> int | None:
         """Get the current volume."""
-        return await self._transport.get_value("player:volume", "i32_")
+        return await self._get(StateKey.VOLUME)
 
     async def set_volume(self, volume: float) -> None:
         """Set the volume."""
-        await self._transport.set_value("player:volume", "i32_", volume)
+        await self._set(StateKey.VOLUME, volume)
 
     # Mute.
     async def is_mute(self) -> bool | None:
         """Check if the device is muted."""
-        return await self._transport.get_value("settings:/mediaPlayer/mute", "bool_")
+        return await self._get(StateKey.MUTED)
 
     async def set_mute(self, mute: bool) -> None:
         """Set the mute state."""
-        await self._transport.set_value("settings:/mediaPlayer/mute", "bool_", mute)
+        await self._set(StateKey.MUTED, mute)
 
     # Power.
     async def get_state(self) -> str | None:
         """Get the current power state (online, networkStandby, …)."""
-        power_target = await self._transport.get_value(
-            "powermanager:target", "powerTarget"
-        )
-        if isinstance(power_target, dict):
-            return power_target.get("target")
-        return None
+        return await self._get(StateKey.STATE)
 
     async def stand_by(self) -> None:
         """Put the device into standby mode."""
@@ -380,13 +403,11 @@ class AmbeoSoundbar:
 
     async def get_play_time(self) -> int | None:
         """Get the current play time in milliseconds."""
-        return await self._transport.get_value("player:player/data/playTime", "i64_")
+        return await self._get(StateKey.PLAY_TIME)
 
     async def player_data(self) -> dict | None:
         """Get the current player data."""
-        return await self._transport.get_value(
-            "player:player/data/value", "playLogicData"
-        )
+        return await self._get(StateKey.PLAYER_DATA)
 
     # Sources.
     async def fetch_sources(self) -> list[Source]:
@@ -395,11 +416,11 @@ class AmbeoSoundbar:
 
     async def get_current_source(self) -> Any:
         """Get the current audio source ID."""
-        raise NotImplementedError
+        return await self._get(StateKey.CURRENT_SOURCE)
 
     async def set_source(self, source_id: Any) -> None:
         """Set the audio source."""
-        raise NotImplementedError
+        await self._set(StateKey.CURRENT_SOURCE, source_id)
 
     # Presets.
     async def fetch_presets(self) -> list[Preset]:
@@ -408,63 +429,63 @@ class AmbeoSoundbar:
 
     async def get_current_preset(self) -> Any:
         """Get the current audio preset ID."""
-        raise NotImplementedError
+        return await self._get(StateKey.CURRENT_PRESET)
 
     async def set_preset(self, preset: Any) -> None:
         """Set the audio preset."""
-        raise NotImplementedError
+        await self._set(StateKey.CURRENT_PRESET, preset)
 
     # Night mode.
     async def get_night_mode(self) -> bool | None:
         """Get the night mode state."""
-        raise NotImplementedError
+        return await self._get(StateKey.NIGHT_MODE)
 
     async def set_night_mode(self, night_mode: bool) -> None:
         """Set the night mode state."""
-        raise NotImplementedError
+        await self._set(StateKey.NIGHT_MODE, night_mode)
 
     # Ambeo mode.
     async def get_ambeo_mode(self) -> bool | None:
         """Get the Ambeo mode state."""
-        raise NotImplementedError
+        return await self._get(StateKey.AMBEO_MODE)
 
     async def set_ambeo_mode(self, ambeo_mode: bool) -> None:
         """Set the Ambeo mode state."""
-        raise NotImplementedError
+        await self._set(StateKey.AMBEO_MODE, ambeo_mode)
 
     async def get_ambeo_mode_level(self) -> int | None:
         """Get the Ambeo mode level (1=Light, 2=Regular, 3=Boost)."""
-        raise NotImplementedError
+        return await self._get(StateKey.AMBEO_MODE_LEVEL)
 
     async def set_ambeo_mode_level(self, level: int) -> None:
         """Set the Ambeo mode level (1=Light, 2=Regular, 3=Boost)."""
-        raise NotImplementedError
+        await self._set(StateKey.AMBEO_MODE_LEVEL, level)
 
     # Sound feedback.
     async def get_sound_feedback(self) -> bool | None:
         """Get the sound feedback state."""
-        raise NotImplementedError
+        return await self._get(StateKey.SOUND_FEEDBACK)
 
     async def set_sound_feedback(self, state: bool) -> None:
         """Set the sound feedback state."""
-        raise NotImplementedError
+        await self._set(StateKey.SOUND_FEEDBACK, state)
 
     # Voice enhancement.
     async def get_voice_enhancement(self) -> bool | None:
         """Get the voice enhancement state."""
-        raise NotImplementedError
+        return await self._get(StateKey.VOICE_ENHANCEMENT)
 
     async def set_voice_enhancement(self, voice_enhancement_mode: bool) -> None:
         """Set the voice enhancement mode."""
-        raise NotImplementedError
+        await self._set(StateKey.VOICE_ENHANCEMENT, voice_enhancement_mode)
 
     async def get_voice_enhancement_level(self) -> int | None:
         """Get the voice enhancement level."""
-        raise NotImplementedError
+        return await self._get(StateKey.VOICE_ENHANCEMENT_LEVEL)
 
     async def set_voice_enhancement_level(self, level: int) -> None:
         """Set the voice enhancement level."""
-        raise NotImplementedError
+        await self._set(StateKey.VOICE_ENHANCEMENT_LEVEL, level)
 
     # Subwoofer.
     async def has_subwoofer(self) -> bool:
@@ -473,68 +494,68 @@ class AmbeoSoundbar:
 
     async def get_subwoofer_status(self) -> bool | None:
         """Get the subwoofer enabled status."""
-        raise NotImplementedError
+        return await self._get(StateKey.SUBWOOFER_STATUS)
 
     async def set_subwoofer_status(self, status: bool) -> None:
         """Set the subwoofer enabled status."""
-        raise NotImplementedError
+        await self._set(StateKey.SUBWOOFER_STATUS, status)
 
     async def get_subwoofer_volume(self) -> float | None:
         """Get the subwoofer volume."""
-        raise NotImplementedError
+        return await self._get(StateKey.SUBWOOFER_VOLUME)
 
     async def set_subwoofer_volume(self, volume: float) -> None:
         """Set the subwoofer volume."""
-        raise NotImplementedError
+        await self._set(StateKey.SUBWOOFER_VOLUME, volume)
 
     # Ambeo logo.
     async def get_logo_state(self) -> bool | None:
         """Get the Ambeo logo state."""
-        raise NotImplementedError
+        return await self._get(StateKey.LOGO_STATE)
 
     async def change_logo_state(self, value: bool) -> None:
         """Change the Ambeo logo state."""
-        raise NotImplementedError
+        await self._set(StateKey.LOGO_STATE, value)
 
     async def get_logo_brightness(self) -> int | None:
         """Get the Ambeo logo brightness."""
-        raise NotImplementedError
+        return await self._get(StateKey.LOGO_BRIGHTNESS)
 
     async def set_logo_brightness(self, brightness: int) -> None:
         """Set the Ambeo logo brightness."""
-        raise NotImplementedError
+        await self._set(StateKey.LOGO_BRIGHTNESS, brightness)
 
     # LED bar.
     async def get_led_bar_brightness(self) -> int | None:
         """Get the LED bar brightness."""
-        raise NotImplementedError
+        return await self._get(StateKey.LED_BAR_BRIGHTNESS)
 
     async def set_led_bar_brightness(self, brightness: int) -> None:
         """Set the LED bar brightness."""
-        raise NotImplementedError
+        await self._set(StateKey.LED_BAR_BRIGHTNESS, brightness)
 
     # Ambeo display.
     async def get_display_brightness(self) -> int | None:
         """Get the display brightness."""
-        raise NotImplementedError
+        return await self._get(StateKey.DISPLAY_BRIGHTNESS)
 
     async def set_display_brightness(self, brightness: int) -> None:
         """Set the display brightness."""
-        raise NotImplementedError
+        await self._set(StateKey.DISPLAY_BRIGHTNESS, brightness)
 
     # Codec LED.
     async def get_codec_led_brightness(self) -> int | None:
         """Get the codec LED brightness."""
-        raise NotImplementedError
+        return await self._get(StateKey.CODEC_LED_BRIGHTNESS)
 
     async def set_codec_led_brightness(self, brightness: int) -> None:
         """Set the codec LED brightness."""
-        raise NotImplementedError
+        await self._set(StateKey.CODEC_LED_BRIGHTNESS, brightness)
 
     # Bluetooth pairing.
     async def get_bluetooth_pairing_state(self) -> bool | None:
         """Get the Bluetooth pairing state."""
-        raise NotImplementedError
+        return await self._get(StateKey.BLUETOOTH_PAIRING)
 
     async def set_bluetooth_pairing_state(self, state: bool) -> None:
         """Set the Bluetooth pairing state."""
@@ -543,45 +564,45 @@ class AmbeoSoundbar:
     # Speaker levels.
     async def get_center_speaker_level(self) -> int | None:
         """Get the center speaker level."""
-        raise NotImplementedError
+        return await self._get(StateKey.CENTER_SPEAKER_LEVEL)
 
     async def set_center_speaker_level(self, level: int) -> None:
         """Set the center speaker level."""
-        raise NotImplementedError
+        await self._set(StateKey.CENTER_SPEAKER_LEVEL, level)
 
     async def get_side_firing_level(self) -> int | None:
         """Get the side firing level."""
-        raise NotImplementedError
+        return await self._get(StateKey.SIDE_FIRING_LEVEL)
 
     async def set_side_firing_level(self, level: int) -> None:
         """Set the side firing level."""
-        raise NotImplementedError
+        await self._set(StateKey.SIDE_FIRING_LEVEL, level)
 
     async def get_up_firing_level(self) -> int | None:
         """Get the up firing level."""
-        raise NotImplementedError
+        return await self._get(StateKey.UP_FIRING_LEVEL)
 
     async def set_up_firing_level(self, level: int) -> None:
         """Set the up firing level."""
-        raise NotImplementedError
+        await self._set(StateKey.UP_FIRING_LEVEL, level)
 
     async def get_center_volume(self) -> float | None:
         """Get the center volume."""
-        raise NotImplementedError
+        return await self._get(StateKey.CENTER_VOLUME)
 
     async def set_center_volume(self, volume: float) -> None:
         """Set the center volume."""
-        raise NotImplementedError
+        await self._set(StateKey.CENTER_VOLUME, volume)
 
     # Eco mode.
     async def get_eco_mode(self) -> bool | None:
         """Get the eco mode state."""
-        raise NotImplementedError
+        return await self._get(StateKey.ECO_MODE)
 
     # Decoder.
     async def get_decoder_status(self) -> dict | None:
         """Get the current audio decoder status."""
-        raise NotImplementedError
+        return await self._get(StateKey.DECODER_STATUS)
 
     # Expert settings.
     async def reset_expert_settings(self) -> None:

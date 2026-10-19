@@ -11,7 +11,7 @@ from .const import (
     EXCLUDE_SOURCES_MAX,
     MAX_SOUNDBAR,
     Capability,
-    PathSub,
+    Setting,
     StateKey,
 )
 from .exceptions import AmbeoError, AmbeoResponseError
@@ -20,6 +20,15 @@ from .soundbar import AmbeoSoundbar
 from .transport import AmbeoTransport
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _brightness_state(brightness: dict) -> dict[StateKey, Any]:
+    """Map an espressoBrightness value to logo and display brightness."""
+    values = {
+        StateKey.LOGO_BRIGHTNESS: brightness.get("ambeologo"),
+        StateKey.DISPLAY_BRIGHTNESS: brightness.get("display"),
+    }
+    return {key: value for key, value in values.items() if value is not None}
 
 
 class AmbeoEspresso(AmbeoSoundbar):
@@ -47,57 +56,55 @@ class AmbeoEspresso(AmbeoSoundbar):
     # brightnessSensor is subscribed separately because it maps to two keys.
     _BRIGHTNESS_PATH = "settings:/espresso/brightnessSensor"
 
-    _SUBSCRIPTIONS = (
-        PathSub("player:volume", StateKey.VOLUME, "i32_"),
-        PathSub("settings:/mediaPlayer/mute", StateKey.MUTED, "bool_"),
-        PathSub("espresso:nightModeUi", StateKey.NIGHT_MODE, "bool_"),
-        PathSub("espresso:ambeoModeUi", StateKey.AMBEO_MODE, "bool_"),
-        PathSub("settings:/espresso/soundFeedback", StateKey.SOUND_FEEDBACK, "bool_"),
-        PathSub("espresso:audioInputID", StateKey.CURRENT_SOURCE, "i32_"),
-        PathSub("settings:/espresso/equalizerPreset", StateKey.CURRENT_PRESET, "i32_"),
-        PathSub(
+    _SETTINGS = (
+        Setting("espresso:nightModeUi", StateKey.NIGHT_MODE, "bool_"),
+        Setting("espresso:ambeoModeUi", StateKey.AMBEO_MODE, "bool_"),
+        Setting("settings:/espresso/soundFeedback", StateKey.SOUND_FEEDBACK, "bool_"),
+        Setting("espresso:audioInputID", StateKey.CURRENT_SOURCE, "i32_"),
+        Setting("settings:/espresso/equalizerPreset", StateKey.CURRENT_PRESET, "i32_"),
+        Setting(
             "ui:/mydevice/voiceEnhanceLevel",
             StateKey.VOICE_ENHANCEMENT_LEVEL,
             "i16_",
             Capability.VOICE_ENHANCEMENT_LEVEL,
         ),
-        PathSub(
+        Setting(
             "ui:/settings/audio/centerSettings",
             StateKey.CENTER_SPEAKER_LEVEL,
             "i16_",
             Capability.CENTER_SPEAKER_LEVEL,
         ),
-        PathSub(
+        Setting(
             "ui:/settings/audio/widthSettings",
             StateKey.SIDE_FIRING_LEVEL,
             "i16_",
             Capability.SIDE_FIRING_LEVEL,
         ),
-        PathSub(
+        Setting(
             "ui:/settings/audio/heightSettings",
             StateKey.UP_FIRING_LEVEL,
             "i16_",
             Capability.UP_FIRING_LEVEL,
         ),
-        PathSub(
+        Setting(
             "settings:/espresso/ambeoMode",
             StateKey.AMBEO_MODE_LEVEL,
             "i32_",
             Capability.AMBEO_MODE_LEVEL,
         ),
-        PathSub(
+        Setting(
             "ui:/settings/subwoofer/enabled",
             StateKey.SUBWOOFER_STATUS,
             "bool_",
             Capability.SUBWOOFER,
         ),
-        PathSub(
+        Setting(
             "ui:/settings/subwoofer/volume",
             StateKey.SUBWOOFER_VOLUME,
             "i16_",
             Capability.SUBWOOFER,
         ),
-        PathSub(
+        Setting(
             "settings:/espresso/decoderStatus",
             StateKey.DECODER_STATUS,
             "espressoDecoderStatus",
@@ -152,38 +159,6 @@ class AmbeoEspresso(AmbeoSoundbar):
         """Wake the device from standby."""
         await self._transport.set_value("espresso:appRequestedOnline", "bool_", True)
 
-    async def get_night_mode(self) -> bool | None:
-        """Get the night mode state."""
-        return await self._transport.get_value("espresso:nightModeUi", "bool_")
-
-    async def set_night_mode(self, night_mode: bool) -> None:
-        """Set the night mode state."""
-        await self._transport.set_value("espresso:nightModeUi", "bool_", night_mode)
-
-    async def get_ambeo_mode(self) -> bool | None:
-        """Get the Ambeo mode state."""
-        return await self._transport.get_value("espresso:ambeoModeUi", "bool_")
-
-    async def set_ambeo_mode(self, ambeo_mode: bool) -> None:
-        """Set the Ambeo mode state."""
-        await self._transport.set_value("espresso:ambeoModeUi", "bool_", ambeo_mode)
-
-    async def get_sound_feedback(self) -> bool | None:
-        """Get the sound feedback state."""
-        return await self._transport.get_value(
-            "settings:/espresso/soundFeedback", "bool_"
-        )
-
-    async def set_sound_feedback(self, state: bool) -> None:
-        """Set the sound feedback state."""
-        await self._transport.set_value(
-            "settings:/espresso/soundFeedback", "bool_", state
-        )
-
-    async def get_current_source(self) -> int | None:
-        """Get the current audio source ID."""
-        return await self._transport.get_value("espresso:audioInputID", "i32_")
-
     async def fetch_sources(self) -> list[Source]:
         """Fetch all available audio sources."""
         input_names, inputs = await asyncio.gather(
@@ -208,49 +183,18 @@ class AmbeoEspresso(AmbeoSoundbar):
             sources.append(Source(input_index_map[key], label))
         return sources
 
-    async def set_source(self, source_id: int) -> None:
-        """Set the audio source."""
-        await self._transport.set_value("espresso:audioInputID", "i32_", source_id)
-
-    async def get_current_preset(self) -> int | None:
-        """Get the current audio preset ID."""
-        return await self._transport.get_value(
-            "settings:/espresso/equalizerPreset", "i32_"
-        )
-
-    async def set_preset(self, preset: int) -> None:
-        """Set the audio preset."""
-        await self._transport.set_value(
-            "settings:/espresso/equalizerPreset", "i32_", preset
-        )
-
     async def fetch_presets(self) -> list[Preset]:
         """Return the audio presets (fixed on this model)."""
         return list(self._PRESETS)
 
-    async def fetch_state(self, max_concurrency: int = 3) -> dict[StateKey, Any]:
-        """Fetch the full device state.
-
-        Logo and display brightness share one path, read once per fetch.
-        """
-        state, brightness = await asyncio.gather(
-            super().fetch_state(max_concurrency), self._fetch_brightness_state()
-        )
-        state.update(brightness)
-        return state
-
-    async def _fetch_brightness_state(self) -> dict[StateKey, Any]:
-        """Return the logo and display brightness state values."""
+    async def _fetch_extra_state(self) -> dict[StateKey, Any]:
+        """Return the logo and display brightness, which share one path."""
         try:
             brightness = await self._get_brightness()
         except AmbeoError as e:
             _LOGGER.debug("Brightness not available: %s", e)
             return {}
-        values = {
-            StateKey.LOGO_BRIGHTNESS: brightness.get("ambeologo"),
-            StateKey.DISPLAY_BRIGHTNESS: brightness.get("display"),
-        }
-        return {key: value for key, value in values.items() if value is not None}
+        return _brightness_state(brightness)
 
     async def _get_brightness(self) -> dict:
         """Get the logo and display brightness values."""
@@ -292,64 +236,6 @@ class AmbeoEspresso(AmbeoSoundbar):
         """Set the Ambeo logo brightness."""
         await self._set_brightness("ambeologo", brightness)
 
-    async def get_voice_enhancement_level(self) -> int | None:
-        """Get the voice enhancement level."""
-        return await self._transport.get_value("ui:/mydevice/voiceEnhanceLevel", "i16_")
-
-    async def set_voice_enhancement_level(self, level: int) -> None:
-        """Set the voice enhancement level."""
-        await self._transport.set_value("ui:/mydevice/voiceEnhanceLevel", "i16_", level)
-
-    async def get_center_speaker_level(self) -> int | None:
-        """Get the center speaker level."""
-        return await self._transport.get_value(
-            "ui:/settings/audio/centerSettings", "i16_"
-        )
-
-    async def set_center_speaker_level(self, level: int) -> None:
-        """Set the center speaker level."""
-        await self._transport.set_value(
-            "ui:/settings/audio/centerSettings", "i16_", level
-        )
-
-    async def get_side_firing_level(self) -> int | None:
-        """Get the side firing speaker level."""
-        return await self._transport.get_value(
-            "ui:/settings/audio/widthSettings", "i16_"
-        )
-
-    async def set_side_firing_level(self, level: int) -> None:
-        """Set the side firing speaker level."""
-        await self._transport.set_value(
-            "ui:/settings/audio/widthSettings", "i16_", level
-        )
-
-    async def get_up_firing_level(self) -> int | None:
-        """Get the up firing speaker level."""
-        return await self._transport.get_value(
-            "ui:/settings/audio/heightSettings", "i16_"
-        )
-
-    async def set_up_firing_level(self, level: int) -> None:
-        """Set the up firing speaker level."""
-        await self._transport.set_value(
-            "ui:/settings/audio/heightSettings", "i16_", level
-        )
-
-    async def get_ambeo_mode_level(self) -> int | None:
-        """Get the Ambeo mode level (1=Light, 2=Regular, 3=Boost)."""
-        return await self._transport.get_value("settings:/espresso/ambeoMode", "i32_")
-
-    async def set_ambeo_mode_level(self, level: int) -> None:
-        """Set the Ambeo mode level (1=Light, 2=Regular, 3=Boost)."""
-        await self._transport.set_value("settings:/espresso/ambeoMode", "i32_", level)
-
-    async def get_decoder_status(self) -> dict | None:
-        """Get the current audio decoder status."""
-        return await self._transport.get_value(
-            "settings:/espresso/decoderStatus", "espressoDecoderStatus"
-        )
-
     async def reset_expert_settings(self) -> None:
         """Reset expert audio settings to defaults."""
         await self._transport.activate(
@@ -369,27 +255,9 @@ class AmbeoEspresso(AmbeoSoundbar):
             )
         return self._has_subwoofer
 
-    async def get_subwoofer_volume(self) -> float | None:
-        """Get the subwoofer volume."""
-        return await self._transport.get_value("ui:/settings/subwoofer/volume", "i16_")
-
     async def set_subwoofer_volume(self, volume: float) -> None:
-        """Set the subwoofer volume."""
-        await self._transport.set_value(
-            "ui:/settings/subwoofer/volume", "i16_", int(volume)
-        )
-
-    async def get_subwoofer_status(self) -> bool | None:
-        """Get the subwoofer enabled status."""
-        return await self._transport.get_value(
-            "ui:/settings/subwoofer/enabled", "bool_"
-        )
-
-    async def set_subwoofer_status(self, status: bool) -> None:
-        """Set the subwoofer enabled status."""
-        await self._transport.set_value(
-            "ui:/settings/subwoofer/enabled", "bool_", status
-        )
+        """Set the subwoofer volume (an integer on this model)."""
+        await self._set(StateKey.SUBWOOFER_VOLUME, int(volume))
 
     def subscribed_paths(self) -> list[str]:
         """Return paths to subscribe to, filtered by device capabilities."""
@@ -404,12 +272,5 @@ class AmbeoEspresso(AmbeoSoundbar):
         """Map an event path + itemValue to state updates."""
         if path == self._BRIGHTNESS_PATH:
             brightness = item_value.get("espressoBrightness")
-            if not isinstance(brightness, dict):
-                return {}
-            updates: dict[StateKey, Any] = {}
-            if "ambeologo" in brightness:
-                updates[StateKey.LOGO_BRIGHTNESS] = brightness["ambeologo"]
-            if "display" in brightness:
-                updates[StateKey.DISPLAY_BRIGHTNESS] = brightness["display"]
-            return updates
+            return _brightness_state(brightness) if isinstance(brightness, dict) else {}
         return super().process_event(path, item_value)
