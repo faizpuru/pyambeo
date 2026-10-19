@@ -79,14 +79,14 @@ class StateKey(StrEnum):
     DECODER_STATUS = "decoder_status"
 
 
-class PathSub(NamedTuple):
-    """Describes a single event-queue subscription.
+class Setting(NamedTuple):
+    """Describes a device setting, read, written and subscribed to by path.
 
-    path       -- Device API path to subscribe to.
+    path       -- Device API path.
     data_key   -- Key used in the state dict.
-    type_key   -- JSON type key inside the event's itemValue dict.
-    capability -- Required device capability, or None if always subscribed.
-    sub_key    -- If set, the final value is item_value[type_key][sub_key]
+    type_key   -- JSON type key of the value (e.g. "bool_", "i32_").
+    capability -- Required device capability, or None if always available.
+    sub_key    -- If set, the final value is value[sub_key]
                   (used when the type value is itself a dict).
     """
 
@@ -95,65 +95,3 @@ class PathSub(NamedTuple):
     type_key: str
     capability: Capability | None = None
     sub_key: str | None = None
-
-
-class FeatureDef(NamedTuple):
-    """Optional state value fetched by fetch_state() when the capability matches."""
-
-    data_key: StateKey
-    api_method: str
-    capability: Capability | None = None
-
-
-OPTIONAL_FEATURES: tuple[FeatureDef, ...] = (
-    FeatureDef(StateKey.PLAY_TIME, "get_play_time"),
-    FeatureDef(
-        StateKey.LED_BAR_BRIGHTNESS, "get_led_bar_brightness", Capability.LED_BAR
-    ),
-    FeatureDef(
-        StateKey.CODEC_LED_BRIGHTNESS, "get_codec_led_brightness", Capability.CODEC_LED
-    ),
-    FeatureDef(StateKey.LOGO_BRIGHTNESS, "get_logo_brightness", Capability.AMBEO_LOGO),
-    FeatureDef(StateKey.LOGO_STATE, "get_logo_state", Capability.AMBEO_LOGO),
-    FeatureDef(StateKey.NIGHT_MODE, "get_night_mode"),
-    FeatureDef(StateKey.AMBEO_MODE, "get_ambeo_mode"),
-    FeatureDef(StateKey.SOUND_FEEDBACK, "get_sound_feedback"),
-    FeatureDef(
-        StateKey.VOICE_ENHANCEMENT,
-        "get_voice_enhancement",
-        Capability.VOICE_ENHANCEMENT_TOGGLE,
-    ),
-    FeatureDef(
-        StateKey.BLUETOOTH_PAIRING,
-        "get_bluetooth_pairing_state",
-        Capability.BLUETOOTH_PAIRING,
-    ),
-    FeatureDef(StateKey.SUBWOOFER_STATUS, "get_subwoofer_status", Capability.SUBWOOFER),
-    FeatureDef(StateKey.SUBWOOFER_VOLUME, "get_subwoofer_volume", Capability.SUBWOOFER),
-    FeatureDef(
-        StateKey.VOICE_ENHANCEMENT_LEVEL,
-        "get_voice_enhancement_level",
-        Capability.VOICE_ENHANCEMENT_LEVEL,
-    ),
-    FeatureDef(
-        StateKey.CENTER_SPEAKER_LEVEL,
-        "get_center_speaker_level",
-        Capability.CENTER_SPEAKER_LEVEL,
-    ),
-    FeatureDef(
-        StateKey.SIDE_FIRING_LEVEL,
-        "get_side_firing_level",
-        Capability.SIDE_FIRING_LEVEL,
-    ),
-    FeatureDef(
-        StateKey.UP_FIRING_LEVEL, "get_up_firing_level", Capability.UP_FIRING_LEVEL
-    ),
-    FeatureDef(StateKey.CENTER_VOLUME, "get_center_volume", Capability.CENTER_VOLUME),
-    FeatureDef(StateKey.ECO_MODE, "get_eco_mode", Capability.ECO_MODE),
-    FeatureDef(
-        StateKey.DECODER_STATUS, "get_decoder_status", Capability.DECODER_STATUS
-    ),
-    FeatureDef(
-        StateKey.AMBEO_MODE_LEVEL, "get_ambeo_mode_level", Capability.AMBEO_MODE_LEVEL
-    ),
-)

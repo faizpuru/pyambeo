@@ -1,5 +1,6 @@
 """Tests pinning the device API calls of each soundbar model."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +11,7 @@ from pyambeo import (
     AmbeoResponseError,
     DeviceInfo,
     Source,
+    StateKey,
 )
 from pyambeo.transport import AmbeoTransport
 
@@ -232,3 +234,85 @@ async def test_espresso_has_subwoofer(data, expected):
     assert await bar.has_subwoofer() is expected
     assert await bar.has_subwoofer() is expected
     transport.get_data.assert_awaited_once_with("ui:/settings/subwoofer/enabled")
+
+
+@pytest.mark.parametrize("cls", [AmbeoEspresso, AmbeoPopcorn])
+@pytest.mark.parametrize("max_concurrency", [1, 3])
+async def test_fetch_state_limits_concurrency(cls, max_concurrency):
+    """Never have more than max_concurrency requests in flight during a poll."""
+    bar, transport = _make(cls)
+    in_flight = peak = calls = 0
+
+    async def get_value(path, data_type):
+        nonlocal in_flight, peak, calls
+        in_flight += 1
+        calls += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+        if data_type == "espressoBrightness":
+            return {"ambeologo": 1, "display": 2}
+
+    transport.get_value = AsyncMock(side_effect=get_value)
+    state = await bar.fetch_state(max_concurrency)
+    assert calls > max_concurrency
+    assert peak == max_concurrency
+    if cls is AmbeoEspresso:
+        assert state[StateKey.DISPLAY_BRIGHTNESS] == 2
+
+
+@pytest.mark.parametrize(
+    ("cls", "method", "path", "data_type", "raw", "expected"),
+    [
+        (AmbeoEspresso, "get_night_mode", "espresso:nightModeUi", "bool_", True, True),
+        (
+            AmbeoPopcorn,
+            "get_night_mode",
+            "settings:/popcorn/audio/nightModeStatus",
+            "bool_",
+            True,
+            True,
+        ),
+        (AmbeoPopcorn, "get_volume", "player:volume", "i32_", 20, 20),
+        (
+            AmbeoPopcorn,
+            "get_state",
+            "powermanager:target",
+            "powerTarget",
+            {"target": "online"},
+            "online",
+        ),
+        (AmbeoPopcorn, "get_state", "powermanager:target", "powerTarget", None, None),
+        (
+            AmbeoPopcorn,
+            "get_bluetooth_pairing_state",
+            "bluetooth:state",
+            "bluetoothState",
+            {"pairable": True},
+            True,
+        ),
+    ],
+)
+async def test_get_value(cls, method, path, data_type, raw, expected):
+    """Read each setting from its device path, unwrapping nested values."""
+    bar, transport = _make(cls)
+    transport.get_value = AsyncMock(return_value=raw)
+    assert await getattr(bar, method)() == expected
+    transport.get_value.assert_awaited_once_with(path, data_type)
+
+
+@pytest.mark.parametrize(
+    ("cls", "method"),
+    [
+        (AmbeoEspresso, "get_eco_mode"),
+        (AmbeoEspresso, "get_led_bar_brightness"),
+        (AmbeoPopcorn, "get_display_brightness"),
+        (AmbeoPopcorn, "get_up_firing_level"),
+    ],
+)
+async def test_get_unsupported(cls, method):
+    """Raise NotImplementedError for settings the model does not have."""
+    bar, transport = _make(cls)
+    with pytest.raises(NotImplementedError):
+        await getattr(bar, method)()
+    transport.get_value.assert_not_called()
