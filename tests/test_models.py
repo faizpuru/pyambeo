@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pyambeo import (
+    AmbeoError,
     AmbeoEspresso,
     AmbeoPopcorn,
     AmbeoResponseError,
@@ -196,6 +197,37 @@ async def test_popcorn_set_source_uses_row_path(source_id, path):
     transport.activate.assert_awaited_once_with(path, PRESS)
 
 
+async def test_popcorn_set_source_not_selectable():
+    """Refuse sources only shown while casting, without calling the device."""
+    bar, transport = _make(AmbeoPopcorn)
+    bar.sources = [Source("googlecast", "Google Cast", selectable=False)]
+    with pytest.raises(AmbeoError):
+        await bar.set_source("googlecast")
+    transport.activate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("method", "state", "pressed"),
+    [
+        ("play", "paused", True),
+        ("play", "stopped", True),
+        ("play", "playing", False),
+        ("play", None, True),
+        ("pause", "playing", True),
+        ("pause", "paused", False),
+        ("pause", "stopped", False),
+        ("pause", None, True),
+    ],
+)
+async def test_popcorn_play_pause_toggle_only_when_needed(method, state, pressed):
+    """Press the multi-purpose button only when it changes the state."""
+    bar, transport = _make(AmbeoPopcorn)
+    data = {"state": state} if state else AmbeoResponseError("500", 500)
+    transport.get_value = AsyncMock(side_effect=[data])
+    await getattr(bar, method)()
+    assert transport.activate.await_count == pressed
+
+
 @pytest.mark.parametrize("method", ["stand_by", "wake", "reset_expert_settings"])
 async def test_popcorn_unsupported(method):
     """Reject commands the Plus/Mini does not support."""
@@ -205,18 +237,21 @@ async def test_popcorn_unsupported(method):
 
 
 @pytest.mark.parametrize(
-    ("subwoofers", "expected"),
-    [([{"id": "sub1"}], True), ([], False), (AmbeoResponseError("404", 404), False)],
+    ("subwoofers", "plugged", "expected"),
+    [
+        ([{"id": "sub1"}], False, True),
+        ([], True, True),
+        ([], False, False),
+        (AmbeoResponseError("404", 404), AmbeoResponseError("404", 404), False),
+    ],
 )
-async def test_popcorn_has_subwoofer(subwoofers, expected):
-    """Detect a subwoofer from the paired list, once."""
+async def test_popcorn_has_subwoofer(subwoofers, plugged, expected):
+    """Detect a paired or wired subwoofer, once."""
     bar, transport = _make(AmbeoPopcorn)
-    transport.get_value = AsyncMock(side_effect=[subwoofers])
+    transport.get_value = AsyncMock(side_effect=[subwoofers, plugged])
     assert await bar.has_subwoofer() is expected
     assert await bar.has_subwoofer() is expected
-    transport.get_value.assert_awaited_once_with(
-        "settings:/popcorn/subwoofer/list", "popcornSubwooferList"
-    )
+    assert transport.get_value.await_count == 2
 
 
 @pytest.mark.parametrize(

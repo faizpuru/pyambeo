@@ -18,6 +18,7 @@ from pyambeo import (
     DeviceInfo,
     PlayerStatus,
     Preset,
+    Range,
     Source,
     StateKey,
 )
@@ -54,6 +55,22 @@ async def test_connect_popcorn(mock_http, session):
             {"id": "spdif", "title": "Optical", "path": "ui:/inputs/optical"},
         ],
     )
+    mock_value(
+        mock_http,
+        "settings:/popcorn/ui/input/inputList",
+        "popcornInputList",
+        [
+            {"id": "hdmi1", "name": "HDMI 1", "customName": "Google TV"},
+            {"id": "spdif", "name": "Optical", "customName": ""},
+        ],
+    )
+    mock_http.get(
+        url_for("getData", "settings:/popcorn/audio/centerVolume"),
+        payload={
+            "edit": {"min": "-6", "max": "9", "step": "1", "type": "slider"},
+            "valueUnit": {"type": "string_", "string_": "db"},
+        },
+    )
     mock_rows(
         mock_http,
         "settings:/popcorn/audio/audioPresetValues",
@@ -65,12 +82,15 @@ async def test_connect_popcorn(mock_http, session):
     assert isinstance(bar, AmbeoPopcorn)
     assert bar.info == DeviceInfo(PLUS, "Living room", "SN123", "1.2.3")
     assert bar.sources == [
-        Source("hdmi1", "HDMI 1"),
+        Source("hdmi1", "Google TV"),
         Source("spdif", "Optical", "ui:/inputs/optical"),
-        Source("airplay", "AirPlay"),
-        Source("googlecast", "Google Cast"),
+        Source("airplay", "AirPlay", selectable=False),
+        Source("googlecast", "Google Cast", selectable=False),
     ]
     assert bar.presets == [Preset("movies", "Movies")]
+    # Reported by the device, otherwise the known bounds.
+    assert bar.get_range(StateKey.CENTER_VOLUME) == Range(-6, 9, 1, "dB")
+    assert bar.get_range(StateKey.SUBWOOFER_VOLUME) == Range(-10, 10, unit="dB")
 
 
 async def test_connect_espresso_sources(mock_http, session):
@@ -154,6 +174,11 @@ async def test_connect_skips_malformed_popcorn_presets(mock_http, session):
     """Ignore Popcorn preset rows missing their title or value."""
     mock_device_info(mock_http, PLUS)
     mock_rows(mock_http, "ui:/inputs", [])
+    mock_http.get(
+        url_for("getData", "settings:/popcorn/ui/input/inputList"),
+        status=500,
+        repeat=True,
+    )
     mock_rows(
         mock_http,
         "settings:/popcorn/audio/audioPresetValues",
@@ -246,7 +271,7 @@ async def test_fetch_state_unreachable(mock_http, session):
     ("cls", "state", "expected"),
     [
         (AmbeoEspresso, {"state": "networkStandby"}, PlayerStatus.STANDBY),
-        (AmbeoPopcorn, {"state": "networkStandby"}, PlayerStatus.IDLE),
+        (AmbeoPopcorn, {"state": "networkStandby"}, PlayerStatus.STANDBY),
         # Eco mode is a setting, not a power state.
         (
             AmbeoPopcorn,
@@ -390,6 +415,61 @@ async def test_has_capability(session):
     assert bar.has_capability(Capability.STANDBY)
     assert bar.has_capability("standby")
     assert not bar.has_capability(Capability.LED_BAR)
+
+
+# ---------------------------------------------------------------------------
+# Ranges
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            {
+                "edit": {"min": "-10.0", "max": "10.0", "step": "1"},
+                "valueUnit": {"string_": "db"},
+            },
+            Range(-10, 10, 1, "dB"),
+        ),
+        ({"edit": {"min": "0", "max": "100"}}, Range(0, 100, 1, "%")),
+        ({"edit": {"min": "5", "max": "5"}}, None),
+        ({"edit": {"min": "a", "max": "5"}}, None),
+        ({"edit": {"max": "5"}}, None),
+        ({"value": {"i32_": 1}}, None),
+    ],
+)
+async def test_fetch_ranges(session, data, expected):
+    """Read the slider bounds from the device, ignoring invalid ones."""
+    bar = _make(AmbeoPopcorn, session)
+    bar._transport.get_data = AsyncMock(return_value=data)
+    await bar.fetch_ranges()
+    default = AmbeoPopcorn._DEFAULT_RANGES[StateKey.LED_BAR_BRIGHTNESS]
+    assert bar.get_range(StateKey.LED_BAR_BRIGHTNESS) == (expected or default)
+
+
+async def test_fetch_ranges_tolerates_errors(session):
+    """Fall back to the known bounds when the device does not answer."""
+    bar = _make(AmbeoEspresso, session)
+    bar._transport.get_data = AsyncMock(side_effect=AmbeoResponseError("404", 404))
+    await bar.fetch_ranges()
+    assert bar.get_volume_max() == 50
+    assert bar.get_logo_brightness_range() == (1, 118)
+    assert bar.get_display_brightness_range() == (1, 126)
+    assert (bar.get_subwoofer_min_value(), bar.get_subwoofer_max_value()) == (-12, 12)
+
+
+async def test_range_getters_use_device_ranges(session):
+    """Derive the legacy range getters from the device bounds."""
+    bar = _make(AmbeoPopcorn, session)
+    bar._transport.get_data = AsyncMock(
+        return_value={"edit": {"min": "-5.0", "max": "50.0", "step": "1"}}
+    )
+    await bar.fetch_ranges()
+    assert bar.get_volume_max() == 50
+    assert bar.get_led_bar_brightness_range() == (-5, 50)
+    assert bar.get_range(StateKey.UP_FIRING_LEVEL) == Range(-12, 12, unit="dB")
+    assert bar.get_range(StateKey.NIGHT_MODE) is None
 
 
 def _set_data_values(mock_http) -> list[dict]:
