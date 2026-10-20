@@ -6,8 +6,6 @@ from typing import Any
 
 from .const import (
     AMBEO_MAX_VOLUME_STEP,
-    BRIGHTNESS_RANGE_AMBEO_MAX_DISPLAY,
-    BRIGHTNESS_RANGE_AMBEO_MAX_LOGO,
     EXCLUDE_SOURCES_MAX,
     MAX_SOUNDBAR,
     Capability,
@@ -15,7 +13,7 @@ from .const import (
     StateKey,
 )
 from .exceptions import AmbeoError, AmbeoResponseError
-from .models import Preset, Source
+from .models import Preset, Range, Source
 from .soundbar import AmbeoSoundbar
 from .transport import AmbeoTransport
 
@@ -112,6 +110,14 @@ class AmbeoEspresso(AmbeoSoundbar):
         ),
     )
 
+    _DEFAULT_RANGES = {
+        **AmbeoSoundbar._DEFAULT_RANGES,
+        StateKey.VOLUME: Range(0, 50),
+        StateKey.SUBWOOFER_VOLUME: Range(-12, 12, unit="dB"),
+        StateKey.LOGO_BRIGHTNESS: Range(1, 118, unit="%"),
+        StateKey.DISPLAY_BRIGHTNESS: Range(1, 126, unit="%"),
+    }
+
     _PRESETS = (
         Preset(0, "Neutral"),
         Preset(1, "Movies"),
@@ -127,29 +133,9 @@ class AmbeoEspresso(AmbeoSoundbar):
         # Logo and display brightness share one path: serialize read-modify-write.
         self._brightness_lock = asyncio.Lock()
 
-    def get_volume_max(self) -> int:
-        """Get the maximum native volume value."""
-        return 50
-
     def get_volume_step(self) -> float:
         """Get the volume step size."""
         return AMBEO_MAX_VOLUME_STEP
-
-    def get_subwoofer_min_value(self) -> int:
-        """Get the subwoofer minimum value."""
-        return -12
-
-    def get_subwoofer_max_value(self) -> int:
-        """Get the subwoofer maximum value."""
-        return 12
-
-    def get_logo_brightness_range(self) -> tuple[int, int]:
-        """Get the Ambeo Max logo brightness range."""
-        return BRIGHTNESS_RANGE_AMBEO_MAX_LOGO
-
-    def get_display_brightness_range(self) -> tuple[int, int]:
-        """Get the Ambeo Max display brightness range."""
-        return BRIGHTNESS_RANGE_AMBEO_MAX_DISPLAY
 
     async def stand_by(self) -> None:
         """Put the device into standby mode."""

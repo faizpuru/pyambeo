@@ -18,11 +18,6 @@ MINI_SOUNDBAR = "AMBEO Soundbar Mini"
 AMBEO_POPCORN_VOLUME_STEP = 0.01
 
 
-BRIGHTNESS_RANGE_DEFAULT = (0, 100)
-BRIGHTNESS_RANGE_AMBEO_MAX_DISPLAY = (1, 126)
-BRIGHTNESS_RANGE_AMBEO_MAX_LOGO = (1, 118)
-
-
 class Capability(StrEnum):
     """Device capability identifiers."""
 

@@ -9,7 +9,7 @@ from .exceptions import (
     AmbeoTimeoutError,
     AmbeoUnsupportedModelError,
 )
-from .models import DeviceInfo, PlayerStatus, Preset, Source
+from .models import DeviceInfo, PlayerStatus, Preset, Range, Source
 from .popcorn import AmbeoPopcorn
 from .soundbar import AmbeoSoundbar
 
@@ -26,6 +26,7 @@ __all__ = [
     "DeviceInfo",
     "PlayerStatus",
     "Preset",
+    "Range",
     "Source",
     "StateKey",
 ]

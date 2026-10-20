@@ -1,5 +1,7 @@
 """Implementation for Ambeo Soundbar Plus and Mini (Popcorn)."""
 
+import asyncio
+
 from .const import (
     AMBEO_POPCORN_VOLUME_STEP,
     MINI_SOUNDBAR,
@@ -8,9 +10,9 @@ from .const import (
     Setting,
     StateKey,
 )
-from .exceptions import AmbeoResponseError
+from .exceptions import AmbeoError
 from .models import Preset, Source
-from .soundbar import AmbeoSoundbar
+from .soundbar import AmbeoSoundbar, _none_on_response_error
 from .transport import AmbeoTransport
 
 
@@ -118,11 +120,12 @@ class AmbeoPopcorn(AmbeoSoundbar):
         ),
     )
 
-    # Inputs not listed by the device.
+    # Inputs not listed by the device: they become active when casting to it.
     _ADDITIONAL_SOURCES = (
-        Source("airplay", "AirPlay"),
-        Source("googlecast", "Google Cast"),
+        Source("airplay", "AirPlay", selectable=False),
+        Source("googlecast", "Google Cast", selectable=False),
     )
+    _INPUT_NAMES_PATH = "settings:/popcorn/ui/input/inputList"
 
     def __init__(self, transport: AmbeoTransport, *args, **kwargs) -> None:
         """Initialize and set up instance variables."""
@@ -139,13 +142,22 @@ class AmbeoPopcorn(AmbeoSoundbar):
             "popcorn:multiPurposeButtonActivate", {"type": "bool_", "bool_": True}
         )
 
+    async def _player_state(self) -> str | None:
+        """Return the player state (playing, paused…), if readable."""
+        data = await _none_on_response_error(self._get(StateKey.PLAYER_DATA))
+        return data.get("state") if isinstance(data, dict) else None
+
+    # The web app plays and pauses with the multi-purpose button, as player
+    # controls do not resume cast streams. It toggles: only press it when needed.
     async def play(self) -> None:
         """Send play command."""
-        await self._multi_purpose_button()
+        if await self._player_state() != "playing":
+            await self._multi_purpose_button()
 
     async def pause(self) -> None:
         """Send pause command."""
-        await self._multi_purpose_button()
+        if await self._player_state() not in ("paused", "stopped"):
+            await self._multi_purpose_button()
 
     async def set_bluetooth_pairing_state(self, state: bool) -> None:
         """Set the Bluetooth pairing state."""
@@ -154,10 +166,22 @@ class AmbeoPopcorn(AmbeoSoundbar):
         )
 
     async def fetch_sources(self) -> list[Source]:
-        """Fetch all available audio sources."""
-        rows = await self._transport.get_rows("ui:/inputs", 0, 10)
+        """Fetch all available audio sources, with the names set by the user."""
+        rows, inputs = await asyncio.gather(
+            self._transport.get_rows("ui:/inputs", 0, 10),
+            _none_on_response_error(
+                self._transport.get_value(self._INPUT_NAMES_PATH, "popcornInputList")
+            ),
+        )
+        custom_names = {
+            i["id"]: i["customName"]
+            for i in inputs or []
+            if isinstance(i, dict) and i.get("id") and i.get("customName")
+        }
         sources = [
-            Source(row["id"], row["title"], row.get("path"))
+            Source(
+                row["id"], custom_names.get(row["id"], row["title"]), row.get("path")
+            )
             for row in rows
             if "id" in row and "title" in row
         ]
@@ -165,12 +189,15 @@ class AmbeoPopcorn(AmbeoSoundbar):
         return sources
 
     async def set_source(self, source_id: str) -> None:
-        """Set the audio source."""
+        """Set the audio source.
+
+        Raises AmbeoError for sources that cannot be selected (AirPlay…).
+        """
+        source = next((s for s in self.sources if s.id == source_id), None)
+        if source is not None and not source.selectable:
+            raise AmbeoError(f"Source {source_id} cannot be selected")
         # The ID is not always the last segment of the path (spdif -> optical).
-        path = next(
-            (s.path for s in self.sources if s.id == source_id and s.path),
-            f"ui:/inputs/{source_id}",
-        )
+        path = (source.path if source else None) or f"ui:/inputs/{source_id}"
         await self._transport.activate(path, {"type": "bool_", "bool_": True})
 
     async def fetch_presets(self) -> list[Preset]:
@@ -187,13 +214,17 @@ class AmbeoPopcorn(AmbeoSoundbar):
         ]
 
     async def has_subwoofer(self) -> bool:
-        """Check if a subwoofer is connected."""
+        """Check if a wireless or wired subwoofer is connected."""
         if self._has_subwoofer is None:
-            try:
-                subwoofers = await self._transport.get_value(
-                    "settings:/popcorn/subwoofer/list", "popcornSubwooferList"
-                )
-            except AmbeoResponseError:
-                subwoofers = None
-            self._has_subwoofer = bool(subwoofers)
+            subwoofers, plugged = await asyncio.gather(
+                _none_on_response_error(
+                    self._transport.get_value(
+                        "settings:/popcorn/subwoofer/list", "popcornSubwooferList"
+                    )
+                ),
+                _none_on_response_error(
+                    self._transport.get_value("popcorn:subPlugDetect", "bool_")
+                ),
+            )
+            self._has_subwoofer = bool(subwoofers) or plugged is True
         return self._has_subwoofer

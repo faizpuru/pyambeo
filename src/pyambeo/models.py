@@ -22,6 +22,18 @@ class Source:
     title: str
     # Device action path, when it differs from the ID (Plus/Mini only).
     path: str | None = None
+    # False for inputs that are only shown while in use (AirPlay, Google Cast…).
+    selectable: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class Range:
+    """Bounds of a numeric setting."""
+
+    min: float
+    max: float
+    step: float = 1
+    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

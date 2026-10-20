@@ -8,7 +8,6 @@ from typing import Any, ClassVar
 import aiohttp
 
 from .const import (
-    BRIGHTNESS_RANGE_DEFAULT,
     DEFAULT_PORT,
     DEFAULT_TIMEOUT,
     Capability,
@@ -20,7 +19,7 @@ from .exceptions import (
     AmbeoResponseError,
     AmbeoUnsupportedModelError,
 )
-from .models import DeviceInfo, PlayerStatus, Preset, Source
+from .models import DeviceInfo, PlayerStatus, Preset, Range, Source
 from .transport import AmbeoTransport
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +52,27 @@ def _unwrap(setting: Setting, value: Any) -> Any:
     return value.get(setting.sub_key) if isinstance(value, dict) else None
 
 
+# Device units, normalized.
+_UNITS = {"db": "dB"}
+
+
+def _parse_range(data: Any, default: Range) -> Range | None:
+    """Return the slider bounds a getData response reports, if any."""
+    edit = data.get("edit") if isinstance(data, dict) else None
+    if not isinstance(edit, dict):
+        return None
+    try:
+        low, high = float(edit["min"]), float(edit["max"])
+        step = float(edit.get("step", default.step))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if low >= high or step <= 0:
+        return None
+    unit = data.get("valueUnit")
+    unit = unit.get("string_") if isinstance(unit, dict) else None
+    return Range(low, high, step, _UNITS.get(unit, unit) if unit else default.unit)
+
+
 async def _none_on_response_error[T](coro: Awaitable[T]) -> T | None:
     """Await coro, returning None if the device answered with an error."""
     try:
@@ -83,6 +103,20 @@ class AmbeoSoundbar:
     )
     # Model specific settings: read, written, polled and subscribed to by path.
     _SETTINGS: ClassVar[tuple[Setting, ...]] = ()
+    # Bounds of the numeric settings, used when the device does not report them.
+    _DEFAULT_RANGES: ClassVar[dict[StateKey, Range]] = {
+        StateKey.VOLUME: Range(0, 100),
+        StateKey.SUBWOOFER_VOLUME: Range(-10, 10, unit="dB"),
+        StateKey.CENTER_VOLUME: Range(-3, 6, unit="dB"),
+        StateKey.LED_BAR_BRIGHTNESS: Range(0, 100, unit="%"),
+        StateKey.CODEC_LED_BRIGHTNESS: Range(0, 100, unit="%"),
+        StateKey.LOGO_BRIGHTNESS: Range(0, 100, unit="%"),
+        StateKey.DISPLAY_BRIGHTNESS: Range(0, 100, unit="%"),
+        StateKey.VOICE_ENHANCEMENT_LEVEL: Range(0, 3),
+        StateKey.CENTER_SPEAKER_LEVEL: Range(-12, 12, unit="dB"),
+        StateKey.SIDE_FIRING_LEVEL: Range(-12, 12, unit="dB"),
+        StateKey.UP_FIRING_LEVEL: Range(-12, 12, unit="dB"),
+    }
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register the subclass for its device models."""
@@ -102,6 +136,7 @@ class AmbeoSoundbar:
         self.info = info
         self.sources: list[Source] = sources or []
         self.presets: list[Preset] = presets or []
+        self._ranges: dict[StateKey, Range] = {}
 
     @classmethod
     async def connect(
@@ -114,7 +149,7 @@ class AmbeoSoundbar:
     ) -> "AmbeoSoundbar":
         """Connect to a soundbar and return the implementation for its model.
 
-        Loads the device info, sources and presets. When called on a subclass,
+        Loads the device info, sources, presets and setting ranges. When called on a subclass,
         raises AmbeoUnsupportedModelError if the device is another model.
         """
         transport = AmbeoTransport(host, session, port, timeout)
@@ -132,6 +167,7 @@ class AmbeoSoundbar:
         soundbar = impl(transport, DeviceInfo(model, name, serial, version))
         soundbar.sources = await _none_on_response_error(soundbar.fetch_sources()) or []
         soundbar.presets = await _none_on_response_error(soundbar.fetch_presets()) or []
+        await soundbar.fetch_ranges()
         return soundbar
 
     @property
@@ -228,9 +264,7 @@ class AmbeoSoundbar:
             "paused": PlayerStatus.PAUSED,
             "stopped": PlayerStatus.IDLE,
             "online": PlayerStatus.ON,
-            "networkStandby": PlayerStatus.STANDBY
-            if self.has_capability(Capability.STANDBY)
-            else PlayerStatus.IDLE,
+            "networkStandby": PlayerStatus.STANDBY,
         }
         power_status = power_map.get(state.get(StateKey.STATE) or "", PlayerStatus.ON)
         if power_status != PlayerStatus.ON:
@@ -311,37 +345,70 @@ class AmbeoSoundbar:
         return await self._transport.get_value(_NAME_PATH, "string_")
 
     # Settings ranges.
+    async def fetch_ranges(self, max_concurrency: int = 3) -> None:
+        """Load the bounds the device reports for its numeric settings."""
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def fetch(setting: Setting) -> Range | None:
+            async with semaphore:
+                try:
+                    data = await self._transport.get_data(setting.path)
+                except AmbeoError as e:
+                    _LOGGER.debug("No range for %s: %s", setting.data_key, e)
+                    return None
+            return _parse_range(data, self._DEFAULT_RANGES[setting.data_key])
+
+        settings = [
+            s for s in self._available_settings() if s.data_key in self._DEFAULT_RANGES
+        ]
+        ranges = await asyncio.gather(*(fetch(s) for s in settings))
+        self._ranges = {
+            s.data_key: r for s, r in zip(settings, ranges, strict=True) if r
+        }
+
+    def get_range(self, key: StateKey) -> Range | None:
+        """Return the bounds of a numeric setting.
+
+        Uses the bounds reported by the device, falling back to the known ones.
+        """
+        return self._ranges.get(key) or self._DEFAULT_RANGES.get(key)
+
+    def _int_range(self, key: StateKey) -> tuple[int, int]:
+        """Return the bounds of a numeric setting as integers."""
+        bounds = self.get_range(key) or Range(0, 100)
+        return int(bounds.min), int(bounds.max)
+
     def get_volume_step(self) -> float:
         """Get the volume step size."""
         return 0.01
 
     def get_volume_max(self) -> int:
         """Get the maximum native volume value."""
-        return 100
+        return self._int_range(StateKey.VOLUME)[1]
 
     def get_subwoofer_min_value(self) -> int:
         """Get the subwoofer minimum value."""
-        return -10
+        return self._int_range(StateKey.SUBWOOFER_VOLUME)[0]
 
     def get_subwoofer_max_value(self) -> int:
         """Get the subwoofer maximum value."""
-        return 10
+        return self._int_range(StateKey.SUBWOOFER_VOLUME)[1]
 
     def get_logo_brightness_range(self) -> tuple[int, int]:
         """Get the Ambeo logo brightness range."""
-        return BRIGHTNESS_RANGE_DEFAULT
+        return self._int_range(StateKey.LOGO_BRIGHTNESS)
 
     def get_led_bar_brightness_range(self) -> tuple[int, int]:
         """Get the LED bar brightness range."""
-        return BRIGHTNESS_RANGE_DEFAULT
+        return self._int_range(StateKey.LED_BAR_BRIGHTNESS)
 
     def get_display_brightness_range(self) -> tuple[int, int]:
         """Get the display brightness range."""
-        return BRIGHTNESS_RANGE_DEFAULT
+        return self._int_range(StateKey.DISPLAY_BRIGHTNESS)
 
     def get_codec_led_brightness_range(self) -> tuple[int, int]:
         """Get the codec LED brightness range."""
-        return BRIGHTNESS_RANGE_DEFAULT
+        return self._int_range(StateKey.CODEC_LED_BRIGHTNESS)
 
     # Volume.
     async def get_volume(self) -> int | None:
