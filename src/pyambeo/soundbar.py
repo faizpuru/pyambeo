@@ -223,6 +223,9 @@ class AmbeoSoundbar:
 
     def player_status(self, state: Mapping[str, Any]) -> PlayerStatus:
         """Return the effective playback status for a state snapshot."""
+        if state.get(StateKey.ECO_MODE):
+            return PlayerStatus.STANDBY
+
         power_map = {
             "playing": PlayerStatus.PLAYING,
             "paused": PlayerStatus.PAUSED,
