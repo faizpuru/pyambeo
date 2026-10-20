@@ -2,11 +2,11 @@
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from .const import (
     AMBEO_MAX_VOLUME_STEP,
-    EXCLUDE_SOURCES_MAX,
     MAX_SOUNDBAR,
     Capability,
     Setting,
@@ -14,10 +14,71 @@ from .const import (
 )
 from .exceptions import AmbeoError, AmbeoResponseError
 from .models import Preset, Range, Source
-from .soundbar import AmbeoSoundbar
+from .soundbar import AmbeoSoundbar, _none_on_response_error
 from .transport import AmbeoTransport
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# Values of espresso:audioInputID, as used by the web app.
+_INPUT_IDS = {
+    "hdmi1": 0,
+    "hdmi2": 1,
+    "hdmi3": 2,
+    "hdmiarc": 3,
+    "bluetooth": 4,
+    "googlecast": 5,
+    "upnp": 6,
+    "optical": 7,
+    "aux": 8,
+    "spotify": 9,
+    "tidal": 14,
+}
+# The Chinese model has QPlay instead of the cast services.
+_CHINA_MACHINE = "stream810ambeobarcn"
+_INPUT_IDS_CHINA = {
+    "hdmi1": 0,
+    "hdmi2": 1,
+    "hdmi3": 2,
+    "hdmiarc": 3,
+    "bluetooth": 4,
+    "upnp": 6,
+    "optical": 7,
+    "aux": 8,
+    "qplay": 10,
+}
+
+# Values of decoderStatus.decoder_status (0 when nothing is decoded).
+_CODECS = {
+    1: "PCM",
+    2: "AAC",
+    3: "WMA",
+    4: "Dolby Digital",
+    5: "Dolby Digital Plus",
+    6: "Dolby Atmos",
+    7: "Dolby TrueHD",
+    8: "Dolby TrueHD Atmos",
+    9: "MPEG-H",
+    10: "DTS",
+    11: "DTS-ES 6.1 Matrix",
+    12: "DTS-ES 6.1 Discrete",
+    13: "DTS 96/24",
+    14: "DTS-ES 8ch Discrete",
+    15: "DTS-HD High Resolution",
+    16: "DTS-HD Master Audio",
+    17: "DTS Express",
+    18: "DTS:X",
+    19: "DTS:X Master Audio",
+    20: "SBC",
+    21: "MP3",
+    22: "FLAC",
+    23: "LPCM",
+    24: "ALAC",
+    25: "OGG",
+    26: "M4A",
+    27: "AIFF",
+    28: "MPEG",
+}
 
 
 def _brightness_state(brightness: dict) -> dict[StateKey, Any]:
@@ -112,7 +173,6 @@ class AmbeoEspresso(AmbeoSoundbar):
 
     _DEFAULT_RANGES = {
         **AmbeoSoundbar._DEFAULT_RANGES,
-        StateKey.VOLUME: Range(0, 50),
         StateKey.SUBWOOFER_VOLUME: Range(-12, 12, unit="dB"),
         StateKey.LOGO_BRIGHTNESS: Range(1, 118, unit="%"),
         StateKey.DISPLAY_BRIGHTNESS: Range(1, 126, unit="%"),
@@ -133,6 +193,13 @@ class AmbeoEspresso(AmbeoSoundbar):
         # Logo and display brightness share one path: serialize read-modify-write.
         self._brightness_lock = asyncio.Lock()
 
+    def get_display_volume_max(self) -> int:
+        """Get the maximum volume shown by the soundbar (its display scale).
+
+        player:volume ranges from 0 to 100, the display shows half of it.
+        """
+        return 50
+
     def get_volume_step(self) -> float:
         """Get the volume step size."""
         return AMBEO_MAX_VOLUME_STEP
@@ -147,14 +214,16 @@ class AmbeoEspresso(AmbeoSoundbar):
 
     async def fetch_sources(self) -> list[Source]:
         """Fetch all available audio sources."""
-        input_names, inputs = await asyncio.gather(
+        input_names, inputs, machine = await asyncio.gather(
             self._transport.get_rows("settings:/espresso/inputNames", 0, 20),
             self._transport.get_rows("espresso:", 0, 20),
+            _none_on_response_error(
+                self._transport.get_value("settings:/system/machineName", "string_")
+            ),
         )
-        input_index_map = {
-            row["title"].lower(): index
-            for index, row in enumerate(inputs)
-            if isinstance(row.get("title"), str)
+        input_ids = _INPUT_IDS_CHINA if machine == _CHINA_MACHINE else _INPUT_IDS
+        available = {
+            row["title"].lower() for row in inputs if isinstance(row.get("title"), str)
         }
         sources = []
         for name in input_names:
@@ -164,9 +233,8 @@ class AmbeoEspresso(AmbeoSoundbar):
             if not isinstance(title, str) or label is None:
                 continue
             key = title.lower()
-            if key in EXCLUDE_SOURCES_MAX or key not in input_index_map:
-                continue
-            sources.append(Source(input_index_map[key], label))
+            if key in input_ids and key in available:
+                sources.append(Source(input_ids[key], label))
         return sources
 
     async def fetch_presets(self) -> list[Preset]:
@@ -244,6 +312,18 @@ class AmbeoEspresso(AmbeoSoundbar):
     async def set_subwoofer_volume(self, volume: float) -> None:
         """Set the subwoofer volume (an integer on this model)."""
         await self._set(StateKey.SUBWOOFER_VOLUME, int(volume))
+
+    def audio_codec(self, state: Mapping[str, Any]) -> str | None:
+        """Return the codec of the decoded audio, or None when there is none."""
+        decoder_status = state.get(StateKey.DECODER_STATUS)
+        code = (
+            decoder_status.get("decoder_status")
+            if isinstance(decoder_status, dict)
+            else None
+        )
+        if not isinstance(code, int) or code <= 0:
+            return None
+        return _CODECS.get(code, f"Codec {code}")
 
     def subscribed_paths(self) -> list[str]:
         """Return paths to subscribe to, filtered by device capabilities."""

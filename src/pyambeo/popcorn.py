@@ -1,6 +1,8 @@
 """Implementation for Ambeo Soundbar Plus and Mini (Popcorn)."""
 
 import asyncio
+from collections.abc import Mapping
+from typing import Any
 
 from .const import (
     AMBEO_POPCORN_VOLUME_STEP,
@@ -14,6 +16,31 @@ from .exceptions import AmbeoError
 from .models import Preset, Source
 from .soundbar import AmbeoSoundbar, _none_on_response_error
 from .transport import AmbeoTransport
+
+# Short names of the plain codecs, as shown by the web app. Dolby, DTS and
+# MPEG-H names are already descriptive and kept as is.
+_SHORT_CODEC_NAMES = (
+    ("pcm", "PCM"),
+    ("vorbis", "Vorbis"),
+    ("mp3", "MP3"),
+    ("flac", "FLAC"),
+    ("aac", "AAC"),
+    ("sbc", "SBC"),
+)
+
+
+def _codec_name(codec: str) -> str:
+    """Return the display name of a decoder codec."""
+    lowered = codec.lower()
+    if "dolby" in lowered or "dts" in lowered or "mpeg-h" in lowered:
+        return codec
+    # Tidal Atmos is reported by its container.
+    if lowered.startswith("e-ac-3"):
+        return "Dolby Atmos"
+    for needle, name in _SHORT_CODEC_NAMES:
+        if needle in lowered:
+            return name
+    return codec
 
 
 class AmbeoPopcorn(AmbeoSoundbar):
@@ -158,6 +185,23 @@ class AmbeoPopcorn(AmbeoSoundbar):
         """Send pause command."""
         if await self._player_state() not in ("paused", "stopped"):
             await self._multi_purpose_button()
+
+    def audio_codec(self, state: Mapping[str, Any]) -> str | None:
+        """Return the codec of the decoded audio, or None when there is none."""
+        # Bluetooth bypasses the decoder: the codec is in the stream URI.
+        player_data = state.get(StateKey.PLAYER_DATA) or {}
+        media_data = (player_data.get("mediaRoles") or {}).get("mediaData") or {}
+        resources = media_data.get("resources") or [{}]
+        uri = resources[0].get("uri") if isinstance(resources[0], dict) else None
+        if isinstance(uri, str) and uri.startswith("bluetooth"):
+            return "SBC" if uri.startswith("bluetoothsbc:") else "AAC"
+        decoder_status = state.get(StateKey.DECODER_STATUS)
+        codec = (
+            decoder_status.get("codec") if isinstance(decoder_status, dict) else None
+        )
+        if not isinstance(codec, str) or not codec:
+            return None
+        return _codec_name(codec)
 
     async def set_bluetooth_pairing_state(self, state: bool) -> None:
         """Set the Bluetooth pairing state."""
