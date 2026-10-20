@@ -459,6 +459,22 @@ async def test_fetch_ranges_tolerates_errors(session):
     assert (bar.get_subwoofer_min_value(), bar.get_subwoofer_max_value()) == (-12, 12)
 
 
+async def test_fetch_ranges_espresso(session):
+    """Read the Max bounds, as numbers, except the misreported volume."""
+    bar = _make(AmbeoEspresso, session)
+    bar._transport.get_data = AsyncMock(
+        return_value={
+            "edit": {"max": 12, "min": -12, "step": 1, "type": "number"},
+            "valueUnit": {"type": "string_", "string_": "db"},
+        }
+    )
+    await bar.fetch_ranges()
+    assert bar.get_range(StateKey.SIDE_FIRING_LEVEL) == Range(-12, 12, 1, "dB")
+    assert bar.get_volume_max() == 50
+    paths = [call.args[0] for call in bar._transport.get_data.await_args_list]
+    assert "player:volume" not in paths
+
+
 async def test_range_getters_use_device_ranges(session):
     """Derive the legacy range getters from the device bounds."""
     bar = _make(AmbeoPopcorn, session)

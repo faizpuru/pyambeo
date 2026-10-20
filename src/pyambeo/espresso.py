@@ -110,6 +110,8 @@ class AmbeoEspresso(AmbeoSoundbar):
         ),
     )
 
+    # player:volume reports its native 0-100 scale, the display shows half of it.
+    _FIXED_RANGES = frozenset({StateKey.VOLUME})
     _DEFAULT_RANGES = {
         **AmbeoSoundbar._DEFAULT_RANGES,
         StateKey.VOLUME: Range(0, 50),
