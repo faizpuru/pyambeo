@@ -247,14 +247,10 @@ async def test_fetch_state_unreachable(mock_http, session):
     [
         (AmbeoEspresso, {"state": "networkStandby"}, PlayerStatus.STANDBY),
         (AmbeoPopcorn, {"state": "networkStandby"}, PlayerStatus.IDLE),
+        # Eco mode is a setting, not a power state.
         (
             AmbeoPopcorn,
             {"state": "online", "eco_mode": True, "decoder_status": {"channels": 2}},
-            PlayerStatus.STANDBY,
-        ),
-        (
-            AmbeoPopcorn,
-            {"state": "online", "eco_mode": False, "decoder_status": {"channels": 2}},
             PlayerStatus.PLAYING,
         ),
         (AmbeoPopcorn, {"state": None}, PlayerStatus.ON),
