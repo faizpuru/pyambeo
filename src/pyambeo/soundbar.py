@@ -103,8 +103,6 @@ class AmbeoSoundbar:
     )
     # Model specific settings: read, written, polled and subscribed to by path.
     _SETTINGS: ClassVar[tuple[Setting, ...]] = ()
-    # Bounds the device misreports, never read from it.
-    _FIXED_RANGES: ClassVar[frozenset[StateKey]] = frozenset()
     # Bounds of the numeric settings, used when the device does not report them.
     _DEFAULT_RANGES: ClassVar[dict[StateKey, Range]] = {
         StateKey.VOLUME: Range(0, 100),
@@ -365,10 +363,7 @@ class AmbeoSoundbar:
             return _parse_range(data, self._DEFAULT_RANGES[setting.data_key])
 
         settings = [
-            s
-            for s in self._available_settings()
-            if s.data_key in self._DEFAULT_RANGES
-            and s.data_key not in self._FIXED_RANGES
+            s for s in self._available_settings() if s.data_key in self._DEFAULT_RANGES
         ]
         ranges = await asyncio.gather(*(fetch(s) for s in settings))
         self._ranges = {
@@ -391,8 +386,8 @@ class AmbeoSoundbar:
         """Get the volume step size."""
         return 0.01
 
-    def get_volume_max(self) -> int:
-        """Get the maximum native volume value."""
+    def get_display_volume_max(self) -> int:
+        """Get the maximum volume shown by the soundbar (its display scale)."""
         return self._int_range(StateKey.VOLUME)[1]
 
     def get_subwoofer_min_value(self) -> int:

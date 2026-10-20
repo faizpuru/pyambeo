@@ -541,14 +541,14 @@ async def test_fetch_ranges_tolerates_errors(session):
     bar = _make(AmbeoEspresso, session)
     bar._transport.get_data = AsyncMock(side_effect=AmbeoResponseError("404", 404))
     await bar.fetch_ranges()
-    assert bar.get_volume_max() == 50
+    assert bar.get_display_volume_max() == 50
     assert bar.get_logo_brightness_range() == (1, 118)
     assert bar.get_display_brightness_range() == (1, 126)
     assert (bar.get_subwoofer_min_value(), bar.get_subwoofer_max_value()) == (-12, 12)
 
 
 async def test_fetch_ranges_espresso(session):
-    """Read the Max bounds, as numbers, except the misreported volume."""
+    """Read the Max bounds, as numbers; the display shows half the volume."""
     bar = _make(AmbeoEspresso, session)
     bar._transport.get_data = AsyncMock(
         return_value={
@@ -558,9 +558,8 @@ async def test_fetch_ranges_espresso(session):
     )
     await bar.fetch_ranges()
     assert bar.get_range(StateKey.SIDE_FIRING_LEVEL) == Range(-12, 12, 1, "dB")
-    assert bar.get_volume_max() == 50
-    paths = [call.args[0] for call in bar._transport.get_data.await_args_list]
-    assert "player:volume" not in paths
+    assert bar.get_range(StateKey.VOLUME) == Range(-12, 12, 1, "dB")
+    assert bar.get_display_volume_max() == 50
 
 
 async def test_range_getters_use_device_ranges(session):
@@ -570,7 +569,7 @@ async def test_range_getters_use_device_ranges(session):
         return_value={"edit": {"min": "-5.0", "max": "50.0", "step": "1"}}
     )
     await bar.fetch_ranges()
-    assert bar.get_volume_max() == 50
+    assert bar.get_display_volume_max() == 50
     assert bar.get_led_bar_brightness_range() == (-5, 50)
     assert bar.get_range(StateKey.UP_FIRING_LEVEL) == Range(-12, 12, unit="dB")
     assert bar.get_range(StateKey.NIGHT_MODE) is None

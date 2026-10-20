@@ -171,11 +171,8 @@ class AmbeoEspresso(AmbeoSoundbar):
         ),
     )
 
-    # player:volume reports its native 0-100 scale, the display shows half of it.
-    _FIXED_RANGES = frozenset({StateKey.VOLUME})
     _DEFAULT_RANGES = {
         **AmbeoSoundbar._DEFAULT_RANGES,
-        StateKey.VOLUME: Range(0, 50),
         StateKey.SUBWOOFER_VOLUME: Range(-12, 12, unit="dB"),
         StateKey.LOGO_BRIGHTNESS: Range(1, 118, unit="%"),
         StateKey.DISPLAY_BRIGHTNESS: Range(1, 126, unit="%"),
@@ -195,6 +192,13 @@ class AmbeoEspresso(AmbeoSoundbar):
         self._has_subwoofer: bool | None = None
         # Logo and display brightness share one path: serialize read-modify-write.
         self._brightness_lock = asyncio.Lock()
+
+    def get_display_volume_max(self) -> int:
+        """Get the maximum volume shown by the soundbar (its display scale).
+
+        player:volume ranges from 0 to 100, the display shows half of it.
+        """
+        return 50
 
     def get_volume_step(self) -> float:
         """Get the volume step size."""
