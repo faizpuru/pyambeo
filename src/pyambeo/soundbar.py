@@ -289,6 +289,10 @@ class AmbeoSoundbar:
             return power_map.get(player_state, PlayerStatus.IDLE)
         return power_status
 
+    def audio_codec(self, state: Mapping[str, Any]) -> str | None:
+        """Return the codec of the decoded audio, or None when there is none."""
+        return None
+
     # Events.
     def subscribed_paths(self) -> list[str]:
         """Return the paths to subscribe to, filtered by device capabilities."""

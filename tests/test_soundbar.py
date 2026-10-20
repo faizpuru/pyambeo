@@ -93,28 +93,66 @@ async def test_connect_popcorn(mock_http, session):
     assert bar.get_range(StateKey.SUBWOOFER_VOLUME) == Range(-10, 10, unit="dB")
 
 
-async def test_connect_espresso_sources(mock_http, session):
-    """Map Max input names to input indexes, case-insensitively."""
+# Order of the espresso: rows of a Max (ha-ambeo_soundbar#44 HAR).
+MAX_INPUT_ROWS = [
+    {"title": t}
+    for t in [
+        "HDMI1",
+        "HDMI2",
+        "HDMI3",
+        "HDMIARC",
+        "bluetooth",
+        "googlecast",
+        "UPnP",
+        "Optical",
+        "AUX",
+        "spotify",
+        "AES",
+        "airplay",
+        "avs",
+        "tidal",
+        "tuneIn",
+        "Toggle_Next",
+        "Toggle_Prev",
+    ]
+]
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        (
+            "stream810ambeobar",
+            [Source(0, "TV"), Source(7, "Optical"), Source(14, "Tidal Connect")],
+        ),
+        ("stream810ambeobarcn", [Source(0, "TV"), Source(7, "Optical")]),
+    ],
+)
+async def test_connect_espresso_sources(mock_http, session, machine, expected):
+    """Map Max input names to the input IDs used by the web app."""
     mock_device_info(mock_http, MAX)
+    mock_value(mock_http, "settings:/system/machineName", "string_", machine)
     mock_rows(
         mock_http,
         "settings:/espresso/inputNames",
         [
-            {"title": "HDMI1", "value": {"string_": "TV"}},
+            {"title": "hdmi1", "value": {"string_": "TV"}},
             {"title": "aes", "value": {"string_": "AES"}},
-            {"title": "Optical", "value": {"string_": "Optical"}},
+            {"title": "optical", "value": {"string_": "Optical"}},
+            {"title": "tidal", "value": {"string_": "Tidal Connect"}},
+            {"title": "hdmi2", "value": {"string_": "Not listed"}},
         ],
     )
     mock_rows(
         mock_http,
         "espresso:",
-        [{"title": "aes"}, {"title": "hdmi1"}, {"title": "optical"}],
+        [r for r in MAX_INPUT_ROWS if r["title"] != "HDMI2"],
     )
 
     bar = await AmbeoSoundbar.connect(HOST, session)
 
     assert isinstance(bar, AmbeoEspresso)
-    assert bar.sources == [Source(1, "TV"), Source(2, "Optical")]
+    assert bar.sources == expected
     assert [p.title for p in bar.presets][:2] == ["Neutral", "Movies"]
 
 
@@ -164,6 +202,9 @@ async def test_connect_skips_malformed_espresso_rows(mock_http, session):
         ],
     )
     mock_rows(mock_http, "espresso:", [{"title": "hdmi1"}, {}, {"title": "optical"}])
+    mock_http.get(
+        url_for("getData", "settings:/system/machineName"), status=500, repeat=True
+    )
 
     bar = await AmbeoSoundbar.connect(HOST, session)
 
@@ -415,6 +456,53 @@ async def test_has_capability(session):
     assert bar.has_capability(Capability.STANDBY)
     assert bar.has_capability("standby")
     assert not bar.has_capability(Capability.LED_BAR)
+
+
+# ---------------------------------------------------------------------------
+# audio_codec()
+# ---------------------------------------------------------------------------
+
+
+def _bluetooth(uri):
+    return {
+        StateKey.DECODER_STATUS: {"codec": "pcm"},
+        StateKey.PLAYER_DATA: {
+            "mediaRoles": {"mediaData": {"resources": [{"uri": uri}]}}
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("cls", "state", "expected"),
+    [
+        (AmbeoPopcorn, {StateKey.DECODER_STATUS: {"codec": "pcm"}}, "PCM"),
+        (AmbeoPopcorn, {StateKey.DECODER_STATUS: {"codec": "MPEG-4 AAC"}}, "AAC"),
+        (
+            AmbeoPopcorn,
+            {StateKey.DECODER_STATUS: {"codec": "Dolby TrueHD - Dolby Atmos"}},
+            "Dolby TrueHD - Dolby Atmos",
+        ),
+        (
+            AmbeoPopcorn,
+            {StateKey.DECODER_STATUS: {"codec": "E-AC-3 (container: ISO MP4/M4A)"}},
+            "Dolby Atmos",
+        ),
+        (AmbeoPopcorn, {StateKey.DECODER_STATUS: {"codec": "Opus"}}, "Opus"),
+        (AmbeoPopcorn, _bluetooth("bluetoothsbc:00:11"), "SBC"),
+        (AmbeoPopcorn, _bluetooth("bluetoothaac:00:11"), "AAC"),
+        (AmbeoPopcorn, _bluetooth("HDMI:1"), "PCM"),
+        (AmbeoPopcorn, {StateKey.DECODER_STATUS: {}}, None),
+        (AmbeoPopcorn, {}, None),
+        (AmbeoEspresso, {StateKey.DECODER_STATUS: {"decoder_status": 1}}, "PCM"),
+        (AmbeoEspresso, {StateKey.DECODER_STATUS: {"decoder_status": 18}}, "DTS:X"),
+        (AmbeoEspresso, {StateKey.DECODER_STATUS: {"decoder_status": 99}}, "Codec 99"),
+        (AmbeoEspresso, {StateKey.DECODER_STATUS: {"decoder_status": 0}}, None),
+        (AmbeoEspresso, {}, None),
+    ],
+)
+async def test_audio_codec(session, cls, state, expected):
+    """Name the decoded codec as the web app does."""
+    assert _make(cls, session).audio_codec(state) == expected
 
 
 # ---------------------------------------------------------------------------
