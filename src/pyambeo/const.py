@@ -51,6 +51,7 @@ class StateKey(StrEnum):
     CURRENT_PRESET = "current_preset"
     PLAYER_DATA = "player_data"
     PLAY_TIME = "play_time"
+    PLAY_MODE = "play_mode"
     LED_BAR_BRIGHTNESS = "led_bar_brightness"
     CODEC_LED_BRIGHTNESS = "codec_led_brightness"
     LOGO_BRIGHTNESS = "logo_brightness"

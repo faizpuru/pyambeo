@@ -381,6 +381,9 @@ async def test_process_event(session):
         "bluetooth:state", {"bluetoothState": {"pairable": True}}
     ) == {StateKey.BLUETOOTH_PAIRING: True}
     assert espresso.process_event(
+        "settings:/mediaPlayer/playMode", {"playerPlayMode": "shuffleRepeatAll"}
+    ) == {StateKey.PLAY_MODE: "shuffleRepeatAll"}
+    assert espresso.process_event(
         "settings:/espresso/brightnessSensor",
         {"espressoBrightness": {"ambeologo": 5, "display": 7}},
     ) == {StateKey.LOGO_BRIGHTNESS: 5, StateKey.DISPLAY_BRIGHTNESS: 7}

@@ -11,6 +11,7 @@ from pyambeo import (
     AmbeoPopcorn,
     AmbeoResponseError,
     DeviceInfo,
+    PlayMode,
     Source,
     StateKey,
 )
@@ -29,6 +30,13 @@ def _make(cls):
     ("method", "arg", "path", "data_type", "value"),
     [
         ("set_volume", 20, "player:volume", "i32_", 20),
+        (
+            "set_play_mode",
+            PlayMode.SHUFFLE,
+            "settings:/mediaPlayer/playMode",
+            "playerPlayMode",
+            "shuffle",
+        ),
         ("set_mute", True, "settings:/mediaPlayer/mute", "bool_", True),
         ("set_source", 2, "espresso:audioInputID", "i32_", 2),
         ("set_preset", 4, "settings:/espresso/equalizerPreset", "i32_", 4),
@@ -164,6 +172,13 @@ async def test_popcorn_set_value(method, arg, path, data_type, value):
         (AmbeoEspresso, "play", (), "player:player/control", {"control": "play"}),
         (AmbeoEspresso, "pause", (), "player:player/control", {"control": "pause"}),
         (AmbeoEspresso, "next", (), "player:player/control", {"control": "next"}),
+        (
+            AmbeoPopcorn,
+            "seek",
+            (30000,),
+            "player:player/control",
+            {"control": "seekTime", "time": 30000},
+        ),
         (AmbeoEspresso, "reboot", (), "ui:/settings/system/restart", PRESS),
         (
             AmbeoEspresso,
@@ -180,6 +195,20 @@ async def test_activate(cls, method, args, path, payload):
     await getattr(bar, method)(*args)
     transport.activate.assert_awaited_once_with(path, payload)
     transport.set_value.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("repeatOne", PlayMode.REPEAT_ONE), ("unknown", None), (None, None)],
+)
+async def test_get_play_mode(value, expected):
+    """Read the play mode, ignoring values the library does not know."""
+    bar, transport = _make(AmbeoPopcorn)
+    transport.get_value = AsyncMock(return_value=value)
+    assert await bar.get_play_mode() == expected
+    transport.get_value.assert_awaited_once_with(
+        "settings:/mediaPlayer/playMode", "playerPlayMode"
+    )
 
 
 @pytest.mark.parametrize(
