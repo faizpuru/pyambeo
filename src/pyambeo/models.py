@@ -52,3 +52,14 @@ class PlayerStatus(StrEnum):
     IDLE = "idle"
     ON = "on"
     STANDBY = "standby"
+
+
+class PlayMode(StrEnum):
+    """Shuffle and repeat mode of the streamed playback."""
+
+    NORMAL = "normal"
+    SHUFFLE = "shuffle"
+    REPEAT_ONE = "repeatOne"
+    SHUFFLE_REPEAT_ONE = "shuffleRepeatOne"
+    REPEAT_ALL = "repeatAll"
+    SHUFFLE_REPEAT_ALL = "shuffleRepeatAll"

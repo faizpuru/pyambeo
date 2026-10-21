@@ -19,7 +19,7 @@ from .exceptions import (
     AmbeoResponseError,
     AmbeoUnsupportedModelError,
 )
-from .models import DeviceInfo, PlayerStatus, Preset, Range, Source
+from .models import DeviceInfo, PlayerStatus, PlayMode, Preset, Range, Source
 from .transport import AmbeoTransport
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,6 +99,7 @@ class AmbeoSoundbar:
         Setting("settings:/mediaPlayer/mute", StateKey.MUTED, "bool_"),
         Setting("player:player/data/value", StateKey.PLAYER_DATA, "playLogicData"),
         Setting("player:player/data/playTime", StateKey.PLAY_TIME, "i64_"),
+        Setting("settings:/mediaPlayer/playMode", StateKey.PLAY_MODE, "playerPlayMode"),
         Setting("powermanager:target", StateKey.STATE, "powerTarget", sub_key="target"),
     )
     # Model specific settings: read, written, polled and subscribed to by path.
@@ -452,9 +453,16 @@ class AmbeoSoundbar:
         )
 
     # Playback.
-    async def _player_control(self, control: str) -> None:
+    async def _player_control(self, control: str, **params: Any) -> None:
         """Send a player control command."""
-        await self._transport.activate("player:player/control", {"control": control})
+        await self._transport.activate(
+            "player:player/control", {"control": control, **params}
+        )
+
+    async def _player_state(self) -> str | None:
+        """Return the player state (playing, paused…), if readable."""
+        data = await _none_on_response_error(self._get(StateKey.PLAYER_DATA))
+        return data.get("state") if isinstance(data, dict) else None
 
     async def play(self) -> None:
         """Send play command."""
@@ -471,6 +479,22 @@ class AmbeoSoundbar:
     async def previous(self) -> None:
         """Go back to the previous track."""
         await self._player_control("previous")
+
+    async def seek(self, position_ms: int) -> None:
+        """Seek to a position in the current track, in milliseconds."""
+        await self._player_control("seekTime", time=position_ms)
+
+    async def get_play_mode(self) -> PlayMode | None:
+        """Get the shuffle and repeat mode."""
+        mode = await self._get(StateKey.PLAY_MODE)
+        return PlayMode(mode) if mode in PlayMode else None
+
+    async def set_play_mode(self, mode: PlayMode) -> None:
+        """Set the shuffle and repeat mode.
+
+        Only applies to streams announcing it in the player controls.
+        """
+        await self._set(StateKey.PLAY_MODE, mode)
 
     async def get_play_time(self) -> int | None:
         """Get the current play time in milliseconds."""

@@ -11,6 +11,7 @@ from pyambeo import (
     AmbeoPopcorn,
     AmbeoResponseError,
     DeviceInfo,
+    PlayMode,
     Source,
     StateKey,
 )
@@ -29,6 +30,13 @@ def _make(cls):
     ("method", "arg", "path", "data_type", "value"),
     [
         ("set_volume", 20, "player:volume", "i32_", 20),
+        (
+            "set_play_mode",
+            PlayMode.SHUFFLE,
+            "settings:/mediaPlayer/playMode",
+            "playerPlayMode",
+            "shuffle",
+        ),
         ("set_mute", True, "settings:/mediaPlayer/mute", "bool_", True),
         ("set_source", 2, "espresso:audioInputID", "i32_", 2),
         ("set_preset", 4, "settings:/espresso/equalizerPreset", "i32_", 4),
@@ -161,9 +169,14 @@ async def test_popcorn_set_value(method, arg, path, data_type, value):
             "bluetooth:deviceList/discoverable",
             PRESS,
         ),
-        (AmbeoEspresso, "play", (), "player:player/control", {"control": "play"}),
-        (AmbeoEspresso, "pause", (), "player:player/control", {"control": "pause"}),
         (AmbeoEspresso, "next", (), "player:player/control", {"control": "next"}),
+        (
+            AmbeoPopcorn,
+            "seek",
+            (30000,),
+            "player:player/control",
+            {"control": "seekTime", "time": 30000},
+        ),
         (AmbeoEspresso, "reboot", (), "ui:/settings/system/restart", PRESS),
         (
             AmbeoEspresso,
@@ -180,6 +193,20 @@ async def test_activate(cls, method, args, path, payload):
     await getattr(bar, method)(*args)
     transport.activate.assert_awaited_once_with(path, payload)
     transport.set_value.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("repeatOne", PlayMode.REPEAT_ONE), ("unknown", None), (None, None)],
+)
+async def test_get_play_mode(value, expected):
+    """Read the play mode, ignoring values the library does not know."""
+    bar, transport = _make(AmbeoPopcorn)
+    transport.get_value = AsyncMock(return_value=value)
+    assert await bar.get_play_mode() == expected
+    transport.get_value.assert_awaited_once_with(
+        "settings:/mediaPlayer/playMode", "playerPlayMode"
+    )
 
 
 @pytest.mark.parametrize(
@@ -226,6 +253,33 @@ async def test_popcorn_play_pause_toggle_only_when_needed(method, state, pressed
     transport.get_value = AsyncMock(side_effect=[data])
     await getattr(bar, method)()
     assert transport.activate.await_count == pressed
+
+
+@pytest.mark.parametrize(
+    ("method", "state", "control"),
+    [
+        ("play", "paused", "pause"),
+        ("play", "stopped", "play"),
+        ("play", "playing", "play"),
+        ("play", None, "play"),
+        ("pause", "playing", "pause"),
+        ("pause", "paused", None),
+        ("pause", "stopped", None),
+        ("pause", None, "pause"),
+    ],
+)
+async def test_espresso_play_pause(method, state, control):
+    """Resume with pause, which toggles, and never pause twice."""
+    bar, transport = _make(AmbeoEspresso)
+    data = {"state": state} if state else AmbeoResponseError("500", 500)
+    transport.get_value = AsyncMock(side_effect=[data])
+    await getattr(bar, method)()
+    if control is None:
+        transport.activate.assert_not_awaited()
+    else:
+        transport.activate.assert_awaited_once_with(
+            "player:player/control", {"control": control}
+        )
 
 
 @pytest.mark.parametrize("method", ["stand_by", "wake", "reset_expert_settings"])
