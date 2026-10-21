@@ -169,8 +169,6 @@ async def test_popcorn_set_value(method, arg, path, data_type, value):
             "bluetooth:deviceList/discoverable",
             PRESS,
         ),
-        (AmbeoEspresso, "play", (), "player:player/control", {"control": "play"}),
-        (AmbeoEspresso, "pause", (), "player:player/control", {"control": "pause"}),
         (AmbeoEspresso, "next", (), "player:player/control", {"control": "next"}),
         (
             AmbeoPopcorn,
@@ -255,6 +253,33 @@ async def test_popcorn_play_pause_toggle_only_when_needed(method, state, pressed
     transport.get_value = AsyncMock(side_effect=[data])
     await getattr(bar, method)()
     assert transport.activate.await_count == pressed
+
+
+@pytest.mark.parametrize(
+    ("method", "state", "control"),
+    [
+        ("play", "paused", "pause"),
+        ("play", "stopped", "play"),
+        ("play", "playing", "play"),
+        ("play", None, "play"),
+        ("pause", "playing", "pause"),
+        ("pause", "paused", None),
+        ("pause", "stopped", None),
+        ("pause", None, "pause"),
+    ],
+)
+async def test_espresso_play_pause(method, state, control):
+    """Resume with pause, which toggles, and never pause twice."""
+    bar, transport = _make(AmbeoEspresso)
+    data = {"state": state} if state else AmbeoResponseError("500", 500)
+    transport.get_value = AsyncMock(side_effect=[data])
+    await getattr(bar, method)()
+    if control is None:
+        transport.activate.assert_not_awaited()
+    else:
+        transport.activate.assert_awaited_once_with(
+            "player:player/control", {"control": control}
+        )
 
 
 @pytest.mark.parametrize("method", ["stand_by", "wake", "reset_expert_settings"])

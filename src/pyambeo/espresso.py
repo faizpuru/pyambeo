@@ -212,6 +212,18 @@ class AmbeoEspresso(AmbeoSoundbar):
         """Wake the device from standby."""
         await self._transport.set_value("espresso:appRequestedOnline", "bool_", True)
 
+    # The web app resumes a paused stream with pause, as play does not resume
+    # cast streams. Pause toggles: only send it when it changes the state.
+    async def play(self) -> None:
+        """Send play command."""
+        state = await self._player_state()
+        await self._player_control("pause" if state == "paused" else "play")
+
+    async def pause(self) -> None:
+        """Send pause command."""
+        if await self._player_state() not in ("paused", "stopped"):
+            await self._player_control("pause")
+
     async def fetch_sources(self) -> list[Source]:
         """Fetch all available audio sources."""
         input_names, inputs, machine = await asyncio.gather(

@@ -459,6 +459,11 @@ class AmbeoSoundbar:
             "player:player/control", {"control": control, **params}
         )
 
+    async def _player_state(self) -> str | None:
+        """Return the player state (playing, paused…), if readable."""
+        data = await _none_on_response_error(self._get(StateKey.PLAYER_DATA))
+        return data.get("state") if isinstance(data, dict) else None
+
     async def play(self) -> None:
         """Send play command."""
         await self._player_control("play")

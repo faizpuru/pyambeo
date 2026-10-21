@@ -169,11 +169,6 @@ class AmbeoPopcorn(AmbeoSoundbar):
             "popcorn:multiPurposeButtonActivate", {"type": "bool_", "bool_": True}
         )
 
-    async def _player_state(self) -> str | None:
-        """Return the player state (playing, paused…), if readable."""
-        data = await _none_on_response_error(self._get(StateKey.PLAYER_DATA))
-        return data.get("state") if isinstance(data, dict) else None
-
     # The web app plays and pauses with the multi-purpose button, as player
     # controls do not resume cast streams. It toggles: only press it when needed.
     async def play(self) -> None:
