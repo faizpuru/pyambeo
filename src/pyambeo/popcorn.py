@@ -153,6 +153,7 @@ class AmbeoPopcorn(AmbeoSoundbar):
         Source("googlecast", "Google Cast", selectable=False),
     )
     _INPUT_NAMES_PATH = "settings:/popcorn/ui/input/inputList"
+    _MODEL_COLOR_PATH = "settings:/popcorn/modelColor"
 
     def __init__(self, transport: AmbeoTransport, *args, **kwargs) -> None:
         """Initialize and set up instance variables."""
@@ -162,6 +163,19 @@ class AmbeoPopcorn(AmbeoSoundbar):
     def get_volume_step(self) -> float:
         """Get the volume step size."""
         return AMBEO_POPCORN_VOLUME_STEP
+
+    async def fetch_image_url(self) -> str:
+        """Return the URL of the product picture, in the color of the device.
+
+        The web app shows the Plus as "M" and the Mini as "S", black unless the
+        device reports white.
+        """
+        color = await _none_on_response_error(
+            self._transport.get_value(self._MODEL_COLOR_PATH, "popcornModelColor")
+        )
+        size = "S" if self.info.model == MINI_SOUNDBAR else "M"
+        variant = "white" if color == "white" else "black"
+        return self._web_url(f"assets/images/Soundbar_{size}_{variant}.png")
 
     async def _multi_purpose_button(self) -> None:
         """Press the multi-purpose button (toggles play/pause)."""
