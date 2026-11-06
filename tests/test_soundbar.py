@@ -368,6 +368,9 @@ async def test_subscribed_paths(session):
     assert "settings:/espresso/brightnessSensor" not in popcorn
     assert "settings:/espresso/brightnessSensor" in espresso
     assert "bluetooth:state" not in espresso
+    for paths in (popcorn, espresso):
+        assert "firmwareupdate:updateStatus" in paths
+        assert "ui:settings/firmwareUpdate/currentVersion" in paths
 
 
 async def test_process_event(session):
@@ -664,3 +667,53 @@ async def test_fetch_image_url_espresso(session):
     bar = _make(AmbeoEspresso, session)
 
     assert await bar.fetch_image_url() == f"http://{HOST}:80/assets/images/soundbar.png"
+
+
+# ---------------------------------------------------------------------------
+# Firmware update
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ({"state": "idle", "downloadProgress": 0}, "1.0.134"),
+        (None, "1.0.134"),
+        (
+            {
+                "state": "newUpdateAvailable",
+                "imageDescription": {"version": "1.0.140.0"},
+            },
+            "1.0.140",
+        ),
+        ({"state": "downloading", "imageDescription": {"version": "2.1.3"}}, "2.1.3"),
+        ({"state": "newUpdateAvailable", "imageDescription": {}}, "1.0.134"),
+    ],
+)
+async def test_latest_firmware_version(session, status, expected):
+    """Report the version found by the device, else the installed one."""
+    bar = _make(AmbeoPopcorn, session)
+    state = {StateKey.FIRMWARE_VERSION: "1.0.134", StateKey.FIRMWARE_UPDATE: status}
+    assert bar.latest_firmware_version(state) == expected
+
+
+async def test_latest_firmware_version_unknown(session):
+    """Return None when neither version is known."""
+    assert _make(AmbeoEspresso, session).latest_firmware_version({}) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ({"state": "downloading", "downloadProgress": 42}, 42),
+        ({"state": "newUpdateAvailable", "downloadProgress": 0}, None),
+        ({"state": "idle", "downloadProgress": 0}, None),
+        ({"state": "downloading"}, None),
+        (None, None),
+    ],
+)
+async def test_firmware_update_progress(session, status, expected):
+    """Report the download progress only while downloading."""
+    bar = _make(AmbeoPopcorn, session)
+    state = {StateKey.FIRMWARE_UPDATE: status}
+    assert bar.firmware_update_progress(state) == expected

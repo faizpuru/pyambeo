@@ -72,6 +72,8 @@ class StateKey(StrEnum):
     CENTER_VOLUME = "center_volume"
     ECO_MODE = "eco_mode"
     DECODER_STATUS = "decoder_status"
+    FIRMWARE_VERSION = "firmware_version"
+    FIRMWARE_UPDATE = "firmware_update"
 
 
 class Setting(NamedTuple):
