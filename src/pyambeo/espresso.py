@@ -204,6 +204,10 @@ class AmbeoEspresso(AmbeoSoundbar):
         """Get the volume step size."""
         return AMBEO_MAX_VOLUME_STEP
 
+    async def fetch_image_url(self) -> str:
+        """Return the URL of the product picture, the same for every Max."""
+        return self._web_url("assets/images/soundbar.png")
+
     async def stand_by(self) -> None:
         """Put the device into standby mode."""
         await self._transport.set_value("espresso:appRequestedStandby", "bool_", True)

@@ -181,6 +181,10 @@ class AmbeoSoundbar:
         """Return the device port."""
         return self._transport.port
 
+    def _web_url(self, path: str) -> str:
+        """Return the URL of a file served by the device web app."""
+        return f"http://{self.host}:{self.port}/{path}"
+
     def has_capability(self, capability: Capability | str) -> bool:
         """Check if the device has a specific capability."""
         return capability in self.capabilities
@@ -345,6 +349,10 @@ class AmbeoSoundbar:
             _LOGGER.debug("Poll error, recreating event queue")
 
     # Device info.
+    async def fetch_image_url(self) -> str | None:
+        """Return the URL of the product picture served by the device."""
+        return None
+
     async def get_name(self) -> str | None:
         """Get the device name."""
         return await self._transport.get_value(_NAME_PATH, "string_")

@@ -22,6 +22,7 @@ from pyambeo import (
     Source,
     StateKey,
 )
+from pyambeo.const import MINI_SOUNDBAR, PLUS_SOUNDBAR
 from pyambeo.transport import AmbeoTransport
 
 from .conftest import HOST, mock_device_info, mock_rows, mock_value, url_for
@@ -621,3 +622,45 @@ async def test_set_brightness_missing_value(mock_http, session):
     with pytest.raises(AmbeoResponseError):
         await bar.set_logo_brightness(5)
     assert _set_data_values(mock_http) == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_image_url()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "color", "image"),
+    [
+        (PLUS_SOUNDBAR, "black", "Soundbar_M_black.png"),
+        (PLUS_SOUNDBAR, "white", "Soundbar_M_white.png"),
+        (MINI_SOUNDBAR, "black", "Soundbar_S_black.png"),
+        (MINI_SOUNDBAR, "white", "Soundbar_S_white.png"),
+    ],
+)
+async def test_fetch_image_url_popcorn(mock_http, session, model, color, image):
+    """Pick the picture of the model, in the color of the device."""
+    bar = AmbeoPopcorn(
+        AmbeoTransport(HOST, session), DeviceInfo(model, "name", "serial", "1.0")
+    )
+    mock_value(mock_http, "settings:/popcorn/modelColor", "popcornModelColor", color)
+
+    assert await bar.fetch_image_url() == f"http://{HOST}:80/assets/images/{image}"
+
+
+async def test_fetch_image_url_popcorn_color_unreadable(mock_http, session):
+    """Fall back to black when the device does not report its color."""
+    bar = _make(AmbeoPopcorn, session)
+    mock_http.get(url_for("getData", "settings:/popcorn/modelColor"), status=404)
+
+    assert (
+        await bar.fetch_image_url()
+        == f"http://{HOST}:80/assets/images/Soundbar_S_black.png"
+    )
+
+
+async def test_fetch_image_url_espresso(session):
+    """Use the single picture of the Max, without any request."""
+    bar = _make(AmbeoEspresso, session)
+
+    assert await bar.fetch_image_url() == f"http://{HOST}:80/assets/images/soundbar.png"
