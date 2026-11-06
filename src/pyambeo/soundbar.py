@@ -101,6 +101,12 @@ class AmbeoSoundbar:
         Setting("player:player/data/playTime", StateKey.PLAY_TIME, "i64_"),
         Setting("settings:/mediaPlayer/playMode", StateKey.PLAY_MODE, "playerPlayMode"),
         Setting("powermanager:target", StateKey.STATE, "powerTarget", sub_key="target"),
+        Setting(_VERSION_PATH, StateKey.FIRMWARE_VERSION, "string_"),
+        Setting(
+            "firmwareupdate:updateStatus",
+            StateKey.FIRMWARE_UPDATE,
+            "firmwareUpdateStatus",
+        ),
     )
     # Model specific settings: read, written, polled and subscribed to by path.
     _SETTINGS: ClassVar[tuple[Setting, ...]] = ()
@@ -291,6 +297,29 @@ class AmbeoSoundbar:
         if player_state:
             return power_map.get(player_state, PlayerStatus.IDLE)
         return power_status
+
+    def latest_firmware_version(self, state: Mapping[str, Any]) -> str | None:
+        """Return the firmware version the device can update to.
+
+        Returns the installed version when the device has found no update.
+        """
+        status = state.get(StateKey.FIRMWARE_UPDATE)
+        image = status.get("imageDescription") if isinstance(status, dict) else None
+        version = image.get("version") if isinstance(image, dict) else None
+        if not isinstance(version, str) or not version:
+            installed = state.get(StateKey.FIRMWARE_VERSION)
+            return installed if isinstance(installed, str) else None
+        # Like the web app, drop the build number of x.x.x.x versions.
+        parts = version.split(".")
+        return ".".join(parts[:-1]) if len(parts) > 3 else version
+
+    def firmware_update_progress(self, state: Mapping[str, Any]) -> int | None:
+        """Return the download progress of a firmware update, None when idle."""
+        status = state.get(StateKey.FIRMWARE_UPDATE)
+        if not isinstance(status, dict) or status.get("state") != "downloading":
+            return None
+        progress = status.get("downloadProgress")
+        return progress if isinstance(progress, int) else None
 
     def audio_codec(self, state: Mapping[str, Any]) -> str | None:
         """Return the codec of the decoded audio, or None when there is none."""
